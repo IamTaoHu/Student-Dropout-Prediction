@@ -1,0 +1,20 @@
+{
+  "accuracy": 0.888135593220339,
+  "classification_report": "              precision    recall  f1-score   support\n\n           0     0.8898    0.9534    0.9205       601\n           1     0.8838    0.7500    0.8114       284\n\n    accuracy                         0.8881       885\n   macro avg     0.8868    0.8517    0.8660       885\nweighted avg     0.8878    0.8881    0.8855       885\n",
+  "confusion_matrix": [
+    [
+      573,
+      28
+    ],
+    [
+      71,
+      213
+    ]
+  ],
+  "f1": 0.8114285714285714,
+  "model_name": "XGBoost",
+  "num_features": 36,
+  "pr_auc": 0.9085518218375553,
+  "recall": 0.75,
+  "roc_auc": 0.9354069508565537
+}

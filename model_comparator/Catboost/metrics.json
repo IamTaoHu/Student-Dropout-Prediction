@@ -1,0 +1,14 @@
+{
+  "accuracy": 0.8790960451977401,
+  "classification_report": "              precision    recall  f1-score   support\n\n           0     0.9158    0.9052    0.9105       601\n           1     0.8041    0.8239    0.8139       284\n\n    accuracy                         0.8791       885\n   macro avg     0.8600    0.8646    0.8622       885\nweighted avg     0.8800    0.8791    0.8795       885\n",
+  "confusion_matrix": {
+    "fn": 50,
+    "fp": 57,
+    "tn": 544,
+    "tp": 234
+  },
+  "f1": 0.8139130434782609,
+  "pr_auc": 0.907051305442701,
+  "recall": 0.823943661971831,
+  "roc_auc": 0.936760329029083
+}

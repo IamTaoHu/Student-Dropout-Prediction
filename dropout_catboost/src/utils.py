@@ -1,0 +1,28 @@
+import json
+from pathlib import Path
+
+import pandas as pd
+
+
+def ensure_dir(path: str | Path) -> Path:
+    # Ensure a directory exists and return its Path.
+    dir_path = Path(path)
+    dir_path.mkdir(parents=True, exist_ok=True)
+    return dir_path
+
+
+def load_csv(path: str | Path) -> pd.DataFrame:
+    # Load a CSV file or raise a clear error if missing.
+    csv_path = Path(path)
+    if not csv_path.exists():
+        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+    return pd.read_csv(csv_path)
+
+
+def save_json(obj: dict, path: str | Path) -> Path:
+    # Save a JSON file with readable formatting.
+    json_path = Path(path)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    with json_path.open("w", encoding="utf-8") as handle:
+        json.dump(obj, handle, indent=2, sort_keys=True)
+    return json_path

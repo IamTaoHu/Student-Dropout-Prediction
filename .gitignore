@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual env
+.venv/
+venv/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/
+
+# Outputs / logs / models
+outputs/
+*.zip
+*.pt
+*.pth
+*.onnx
+*.log
+
+# Data (เลือกอย่างใดอย่างหนึ่ง)
+# ถ้า data.csv ใหญ่/เป็นข้อมูลจริง: แนะนำ ignore
+data.csv
+**/data.csv

@@ -1,0 +1,7 @@
+pandas
+scikit-learn
+matplotlib
+python-dotenv
+catboost
+shap>=0.44.0
+lime>=0.2.0.1

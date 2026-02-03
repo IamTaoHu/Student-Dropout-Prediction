@@ -1,0 +1,31 @@
+{
+  "model_name": "TabNet",
+  "num_features": 36,
+  "accuracy": 0.7152542372881356,
+  "f1": 0.6664279344205322,
+  "recall": 0.6687529151497199,
+  "roc_auc": 0.8487679487938378,
+  "pr_auc": 0.7081954111476186,
+  "confusion_matrix": [
+    [
+      181,
+      38,
+      65
+    ],
+    [
+      12,
+      366,
+      64
+    ],
+    [
+      26,
+      47,
+      86
+    ]
+  ],
+  "TN": null,
+  "FP": null,
+  "FN": null,
+  "TP": null,
+  "classification_report": "              precision    recall  f1-score   support\n\n           0       0.83      0.64      0.72       284\n           1       0.81      0.83      0.82       442\n           2       0.40      0.54      0.46       159\n\n    accuracy                           0.72       885\n   macro avg       0.68      0.67      0.67       885\nweighted avg       0.74      0.72      0.72       885\n"
+}
