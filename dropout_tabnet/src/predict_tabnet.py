@@ -12,6 +12,7 @@ from .utils import (
     infer_target_column,
     _map_target_to_int,
     compute_metrics,
+    compute_metrics_multiclass,
     load_artifacts,
     save_json,
     ID2LABEL,
@@ -72,12 +73,17 @@ def main() -> None:
 
     scaler, meta = load_artifacts(str(model_dir))
 
+    task_meta = meta.get("task")
+    task = str(task_meta).lower() if task_meta is not None else ""
     threshold = None
-    if isinstance(args.threshold, str) and args.threshold.strip() != "":
-        threshold = float(args.threshold)
-    else:
-        threshold = float(meta.get("threshold", 0.5))
-    print("Warning: multi-class prediction ignores --threshold.")
+    if task == "binary":
+        if isinstance(args.threshold, str) and args.threshold.strip() != "":
+            threshold = float(args.threshold)
+        else:
+            thr = meta.get("threshold", 0.5)
+            if thr is None or thr == "":
+                thr = 0.5
+            threshold = float(thr)
 
     df = load_csv(str(data_path))
 
@@ -104,9 +110,27 @@ def main() -> None:
         probas.append(m.predict_proba(X_scaled))
 
     y_proba = np.mean(np.stack(probas, axis=0), axis=0)
-    if y_proba.ndim != 2 or y_proba.shape[1] != 3:
-        raise ValueError(f"Expected y_proba with shape (n, 3), got {y_proba.shape}")
-    y_pred = np.argmax(y_proba, axis=1).astype(int)
+    if task not in {"binary", "multiclass"}:
+        label_mapping_used = meta.get("label_mapping_used", {})
+        if isinstance(label_mapping_used, dict) and len(label_mapping_used) >= 3:
+            task = "multiclass"
+        elif y_proba.ndim == 2 and y_proba.shape[1] >= 3:
+            task = "multiclass"
+        else:
+            task = "binary"
+    if task == "multiclass":
+        if y_proba.ndim != 2 or y_proba.shape[1] < 3:
+            raise ValueError(f"Expected y_proba with shape (n, 3), got {y_proba.shape}")
+        y_pred = np.argmax(y_proba, axis=1).astype(int)
+    else:
+        if y_proba.ndim != 2 or y_proba.shape[1] < 2:
+            raise ValueError(f"Expected y_proba with shape (n, 2), got {y_proba.shape}")
+        if threshold is None:
+            thr = meta.get("threshold", 0.5)
+            if thr is None or thr == "":
+                thr = 0.5
+            threshold = float(thr)
+        y_pred = (y_proba[:, 1] >= threshold).astype(int)
     pred_labels = [ID2LABEL[int(i)] for i in y_pred]
 
     base_dir = Path(".")
@@ -115,13 +139,21 @@ def main() -> None:
     ensure_dir(str(preds_dir))
     ensure_dir(str(metrics_dir))
 
-    preds_payload = {
-        "y_pred": y_pred,
-        "pred_label": pred_labels,
-        "prob_0": y_proba[:, 0],
-        "prob_1": y_proba[:, 1],
-        "prob_2": y_proba[:, 2],
-    }
+    if task == "multiclass":
+        preds_payload = {
+            "y_pred": y_pred,
+            "pred_label": pred_labels,
+            "prob_dropout": y_proba[:, 0],
+            "prob_enrolled": y_proba[:, 1],
+            "prob_graduate": y_proba[:, 2],
+        }
+    else:
+        preds_payload = {
+            "y_pred": y_pred,
+            "pred_label": pred_labels,
+            "prob_0": y_proba[:, 0],
+            "prob_1": y_proba[:, 1],
+        }
     if y_true is not None:
         preds_payload["y_true"] = y_true
     preds_df = pd.DataFrame(preds_payload)
@@ -131,7 +163,10 @@ def main() -> None:
     print(f"Predicted rows: {len(preds_df)}")
 
     if y_true is not None:
-        metrics = compute_metrics(y_true, y_proba)
+        if task == "multiclass":
+            metrics = compute_metrics_multiclass(y_true, y_proba)
+        else:
+            metrics = compute_metrics(y_true, y_proba, threshold=threshold)
         metrics_payload = {
             "model_name": "TabNet",
             "num_features": len(feature_names),
@@ -142,44 +177,55 @@ def main() -> None:
         metrics_path = metrics_dir / "metrics_predict.json"
         save_json(str(metrics_path), metrics_payload)
 
-        tn = metrics.get("TN", None)
-        fp = metrics.get("FP", None)
-        fn = metrics.get("FN", None)
-        tp = metrics.get("TP", None)
-    def _fmt(v, width=10, prec=4):
-        if v is None:
-            return f"{'NA':>{width}}"
-        if isinstance(v, float):
-            return f"{v:>{width}.{prec}f}"
-        return f"{str(v):>{width}}"
+        if task == "multiclass":
+            print()
+            print("Multiclass metrics:")
+            print(f"accuracy: {metrics.get('accuracy'):.4f}")
+            print(f"f1_macro: {metrics.get('f1_macro'):.4f}")
+            print(f"recall_macro: {metrics.get('recall_macro'):.4f}")
+            print("confusion_matrix:")
+            for row in metrics.get("confusion_matrix", []):
+                print(row)
+            print()
+        else:
+            tn = metrics.get("TN", None)
+            fp = metrics.get("FP", None)
+            fn = metrics.get("FN", None)
+            tp = metrics.get("TP", None)
+            def _fmt(v, width=10, prec=4):
+                if v is None:
+                    return f"{'NA':>{width}}"
+                if isinstance(v, float):
+                    return f"{v:>{width}.{prec}f}"
+                return f"{str(v):>{width}}"
 
-    print()
-    print(
-        f"{'Model':<10}"
-        f"{'accuracy':>10}"
-        f"{'f1':>10}"
-        f"{'recall':>10}"
-        f"{'roc_auc':>10}"
-        f"{'pr_auc':>10}"
-        f"{'TN':>6}"
-        f"{'FP':>6}"
-        f"{'FN':>6}"
-        f"{'TP':>6}"
-    )
-    print("-" * 84)
-    print(
-        f"{'TabNet':<10}"
-        f"{_fmt(metrics.get('accuracy'))}"
-        f"{_fmt(metrics.get('f1'))}"
-        f"{_fmt(metrics.get('recall'))}"
-        f"{_fmt(metrics.get('roc_auc'))}"
-        f"{_fmt(metrics.get('pr_auc'))}"
-        f"{_fmt(metrics.get('TN'), 6, 0)}"
-        f"{_fmt(metrics.get('FP'), 6, 0)}"
-        f"{_fmt(metrics.get('FN'), 6, 0)}"
-        f"{_fmt(metrics.get('TP'), 6, 0)}"
-    )
-    print()
+            print()
+            print(
+                f"{'Model':<10}"
+                f"{'accuracy':>10}"
+                f"{'f1':>10}"
+                f"{'recall':>10}"
+                f"{'roc_auc':>10}"
+                f"{'pr_auc':>10}"
+                f"{'TN':>6}"
+                f"{'FP':>6}"
+                f"{'FN':>6}"
+                f"{'TP':>6}"
+            )
+            print("-" * 84)
+            print(
+                f"{'TabNet':<10}"
+                f"{_fmt(metrics.get('accuracy'))}"
+                f"{_fmt(metrics.get('f1'))}"
+                f"{_fmt(metrics.get('recall'))}"
+                f"{_fmt(metrics.get('roc_auc'))}"
+                f"{_fmt(metrics.get('pr_auc'))}"
+                f"{_fmt(metrics.get('TN'), 6, 0)}"
+                f"{_fmt(metrics.get('FP'), 6, 0)}"
+                f"{_fmt(metrics.get('FN'), 6, 0)}"
+                f"{_fmt(metrics.get('TP'), 6, 0)}"
+            )
+            print()
 
 
 

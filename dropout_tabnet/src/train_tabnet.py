@@ -15,7 +15,9 @@ from .utils import (
     infer_target_column,
     preprocess_tabular,
     compute_metrics,
+    compute_metrics_multiclass,
     save_json,
+    LABEL_MAPPING,
 )
 
 
@@ -67,6 +69,12 @@ def main() -> None:
     parser.add_argument("--virtual_batch_size", type=int, default=64)
     parser.add_argument("--learning_rate", type=float, default=5e-3)
     parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--task",
+        choices=["multiclass", "binary"],
+        default="multiclass",
+        help="Classification task type.",
+    )
     parser.add_argument(
         "--use_weights",
         action="store_true",
@@ -166,10 +174,16 @@ def main() -> None:
         trained_seeds.append(sd)
 
         y_proba_test = model.predict_proba(split.X_test)
-        if y_proba_test.ndim != 2 or y_proba_test.shape[1] != 3:
-            raise ValueError(f"Expected y_proba_test with shape (n, 3), got {y_proba_test.shape}")
-        y_pred = np.argmax(y_proba_test, axis=1).astype(int)
-        metrics = compute_metrics(split.y_test, y_proba_test)
+        if args.task == "multiclass":
+            if y_proba_test.ndim != 2 or y_proba_test.shape[1] != 3:
+                raise ValueError(f"Expected y_proba_test with shape (n, 3), got {y_proba_test.shape}")
+            y_pred = np.argmax(y_proba_test, axis=1).astype(int)
+            metrics = compute_metrics_multiclass(split.y_test, y_proba_test)
+        else:
+            if y_proba_test.ndim != 2 or y_proba_test.shape[1] != 2:
+                raise ValueError(f"Expected y_proba_test with shape (n, 2), got {y_proba_test.shape}")
+            y_pred = (y_proba_test[:, 1] >= args.threshold).astype(int)
+            metrics = compute_metrics(split.y_test, y_proba_test, threshold=args.threshold)
 
         acc = float(metrics.get("accuracy", -1.0))
         print(f"[seed={sd}] test accuracy={acc:.4f}")
@@ -188,11 +202,16 @@ def main() -> None:
         "model_name": "TabNet",
         "target_col": target_col,
         "feature_names": split.feature_names,
-        "threshold": args.threshold,
+        "task": args.task,
+        "label_mapping_used": LABEL_MAPPING,
         "best_seed": best_seed,
         "trained_seeds": trained_seeds,
         "model_zips": model_zips,
     }
+    if args.task == "binary":
+        meta["threshold"] = args.threshold
+    else:
+        meta["threshold"] = None
 
     meta_path = models_dir / "meta.json"
     save_json(str(meta_path), meta)
@@ -202,25 +221,46 @@ def main() -> None:
 
     _joblib.dump(split.scaler, str(scaler_path))
 
-    metrics_payload = {
-        "model_name": "TabNet",
-        "num_features": len(split.feature_names),
-        **metrics,
-        "roc_auc": metrics.get("roc_auc"),
-        "pr_auc": metrics.get("pr_auc"),
-    }
+    if args.task == "multiclass":
+        metrics_payload = {
+            "model_name": "TabNet",
+            "num_features": len(split.feature_names),
+            "accuracy": metrics.get("accuracy"),
+            "f1_macro": metrics.get("f1_macro"),
+            "recall_macro": metrics.get("recall_macro"),
+            "confusion_matrix": metrics.get("confusion_matrix"),
+            "classification_report": metrics.get("classification_report"),
+        }
+    else:
+        metrics_payload = {
+            "model_name": "TabNet",
+            "num_features": len(split.feature_names),
+            **metrics,
+            "roc_auc": metrics.get("roc_auc"),
+            "pr_auc": metrics.get("pr_auc"),
+        }
     metrics_path = metrics_dir / "metrics.json"
     save_json(str(metrics_path), metrics_payload)
 
-    preds_df = pd.DataFrame(
-        {
-            "y_true": split.y_test,
-            "y_pred": y_pred,
-            "prob_0": y_proba_test[:, 0],
-            "prob_1": y_proba_test[:, 1],
-            "prob_2": y_proba_test[:, 2],
-        }
-    )
+    if args.task == "multiclass":
+        preds_df = pd.DataFrame(
+            {
+                "y_true": split.y_test,
+                "y_pred": y_pred,
+                "prob_dropout": y_proba_test[:, 0],
+                "prob_enrolled": y_proba_test[:, 1],
+                "prob_graduate": y_proba_test[:, 2],
+            }
+        )
+    else:
+        preds_df = pd.DataFrame(
+            {
+                "y_true": split.y_test,
+                "y_pred": y_pred,
+                "prob_0": y_proba_test[:, 0],
+                "prob_1": y_proba_test[:, 1],
+            }
+        )
     preds_path = preds_dir / "test_predictions.csv"
     preds_df.to_csv(preds_path, index=False)
 
