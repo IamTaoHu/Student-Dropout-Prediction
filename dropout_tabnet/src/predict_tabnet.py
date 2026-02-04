@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 from pytorch_tabnet.tab_model import TabNetClassifier
+from sklearn.metrics import classification_report, confusion_matrix
 
 from .utils import (
     ensure_dir,
@@ -45,6 +46,85 @@ def _prepare_features(df: pd.DataFrame, feature_names: list) -> pd.DataFrame:
     encoded = pd.get_dummies(filled, columns=cat_cols, drop_first=False)
     aligned = encoded.reindex(columns=feature_names, fill_value=0)
     return aligned
+
+
+def _print_multiclass_tables(y_true: np.ndarray, y_pred: np.ndarray, metrics: dict) -> None:
+    report = classification_report(
+        y_true,
+        y_pred,
+        target_names=["Dropout", "Enrolled", "Graduate"],
+        output_dict=True,
+        zero_division=0,
+    )
+
+    headers = [
+        ("Model", 12),
+        ("accuracy", 12),
+        ("f1_macro", 12),
+        ("recall_macro", 14),
+        ("roc_auc_ovr_macro", 20),
+        ("pr_auc_ovr_macro", 20),
+    ]
+    row = [
+        "TabNet",
+        metrics.get("accuracy"),
+        metrics.get("f1_macro"),
+        metrics.get("recall_macro"),
+        metrics.get("roc_auc_ovr_macro"),
+        metrics.get("pr_auc_ovr_macro"),
+    ]
+
+    def _fmt(v, nd=4):
+        if v is None:
+            return "NA"
+        if isinstance(v, float):
+            return f"{v:.{nd}f}"
+        return str(v)
+
+    header_line = " | ".join(h.ljust(w) for h, w in headers)
+    sep_line = "-+-".join("-" * w for _, w in headers)
+    row_line = " | ".join(
+        _fmt(val).ljust(w) for (val, (_, w)) in zip(row, headers)
+    )
+    print(header_line)
+    print(sep_line)
+    print(row_line)
+
+    per_headers = [
+        ("Class", 6),
+        ("label", 12),
+        ("precision", 10),
+        ("recall", 10),
+        ("f1", 10),
+        ("support", 8),
+    ]
+    per_header_line = " | ".join(h.ljust(w) for h, w in per_headers)
+    per_sep_line = "-+-".join("-" * w for _, w in per_headers)
+    print(per_header_line)
+    print(per_sep_line)
+    for class_id, label in [(0, "Dropout"), (1, "Enrolled"), (2, "Graduate")]:
+        stats = report.get(label, {})
+        row_vals = [
+            class_id,
+            label,
+            stats.get("precision"),
+            stats.get("recall"),
+            stats.get("f1-score"),
+            stats.get("support"),
+        ]
+        row_line = " | ".join(
+            _fmt(val, nd=4).ljust(w) if i < 5 else _fmt(val, nd=0).ljust(w)
+            for i, (val, (_, w)) in enumerate(zip(row_vals, per_headers))
+        )
+        print(row_line)
+
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2])
+    print("confusion_matrix:")
+    print("0:Dropout 1:Enrolled 2:Graduate")
+    for idx, row in enumerate(cm):
+        label = ["Dropout", "Enrolled", "Graduate"][idx]
+        counts = " ".join(str(int(v)) for v in row)
+        print(f"{idx}:{label} {counts}")
 
 
 def main() -> None:
@@ -179,13 +259,7 @@ def main() -> None:
 
         if task == "multiclass":
             print()
-            print("Multiclass metrics:")
-            print(f"accuracy: {metrics.get('accuracy'):.4f}")
-            print(f"f1_macro: {metrics.get('f1_macro'):.4f}")
-            print(f"recall_macro: {metrics.get('recall_macro'):.4f}")
-            print("confusion_matrix:")
-            for row in metrics.get("confusion_matrix", []):
-                print(row)
+            _print_multiclass_tables(y_true, y_pred, metrics)
             print()
         else:
             tn = metrics.get("TN", None)

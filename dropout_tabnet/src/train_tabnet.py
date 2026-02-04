@@ -8,6 +8,7 @@ import pandas as pd
 import torch
 from pytorch_tabnet.tab_model import TabNetClassifier
 from sklearn.utils.class_weight import compute_class_weight
+from sklearn.metrics import classification_report, confusion_matrix
 
 from .utils import (
     ensure_dir,
@@ -56,6 +57,85 @@ def _parse_seeds(seeds_str: str, default_seed: int) -> list[int]:
     if not s:
         return [default_seed]
     return [int(x.strip()) for x in s.split(",") if x.strip() != ""]
+
+
+def _print_multiclass_tables(y_true: np.ndarray, y_pred: np.ndarray, metrics: dict) -> None:
+    report = classification_report(
+        y_true,
+        y_pred,
+        target_names=["Dropout", "Enrolled", "Graduate"],
+        output_dict=True,
+        zero_division=0,
+    )
+
+    headers = [
+        ("Model", 12),
+        ("accuracy", 12),
+        ("f1_macro", 12),
+        ("recall_macro", 14),
+        ("roc_auc_ovr_macro", 20),
+        ("pr_auc_ovr_macro", 20),
+    ]
+    row = [
+        "TabNet",
+        metrics.get("accuracy"),
+        metrics.get("f1_macro"),
+        metrics.get("recall_macro"),
+        metrics.get("roc_auc_ovr_macro"),
+        metrics.get("pr_auc_ovr_macro"),
+    ]
+
+    def _fmt(v, nd=4):
+        if v is None:
+            return "NA"
+        if isinstance(v, float):
+            return f"{v:.{nd}f}"
+        return str(v)
+
+    header_line = " | ".join(h.ljust(w) for h, w in headers)
+    sep_line = "-+-".join("-" * w for _, w in headers)
+    row_line = " | ".join(
+        _fmt(val).ljust(w) for (val, (_, w)) in zip(row, headers)
+    )
+    print(header_line)
+    print(sep_line)
+    print(row_line)
+
+    per_headers = [
+        ("Class", 6),
+        ("label", 12),
+        ("precision", 10),
+        ("recall", 10),
+        ("f1", 10),
+        ("support", 8),
+    ]
+    per_header_line = " | ".join(h.ljust(w) for h, w in per_headers)
+    per_sep_line = "-+-".join("-" * w for _, w in per_headers)
+    print(per_header_line)
+    print(per_sep_line)
+    for class_id, label in [(0, "Dropout"), (1, "Enrolled"), (2, "Graduate")]:
+        stats = report.get(label, {})
+        row_vals = [
+            class_id,
+            label,
+            stats.get("precision"),
+            stats.get("recall"),
+            stats.get("f1-score"),
+            stats.get("support"),
+        ]
+        row_line = " | ".join(
+            _fmt(val, nd=4).ljust(w) if i < 5 else _fmt(val, nd=0).ljust(w)
+            for i, (val, (_, w)) in enumerate(zip(row_vals, per_headers))
+        )
+        print(row_line)
+
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2])
+    print("confusion_matrix:")
+    print("0:Dropout 1:Enrolled 2:Graduate")
+    for idx, row in enumerate(cm):
+        label = ["Dropout", "Enrolled", "Graduate"][idx]
+        counts = " ".join(str(int(v)) for v in row)
+        print(f"{idx}:{label} {counts}")
 
 
 def main() -> None:
@@ -275,33 +355,38 @@ def main() -> None:
             return f"{v:>{width}.{prec}f}"
         return f"{str(v):>{width}}"
 
-    print()
-    print(
-        f"{'Model':<10}"
-        f"{'accuracy':>10}"
-        f"{'f1':>10}"
-        f"{'recall':>10}"
-        f"{'roc_auc':>10}"
-        f"{'pr_auc':>10}"
-        f"{'TN':>6}"
-        f"{'FP':>6}"
-        f"{'FN':>6}"
-        f"{'TP':>6}"
-    )
-    print("-" * 84)
-    print(
-        f"{'TabNet':<10}"
-        f"{_fmt(metrics.get('accuracy'))}"
-        f"{_fmt(metrics.get('f1'))}"
-        f"{_fmt(metrics.get('recall'))}"
-        f"{_fmt(metrics.get('roc_auc'))}"
-        f"{_fmt(metrics.get('pr_auc'))}"
-        f"{_fmt(metrics.get('TN'), 6, 0)}"
-        f"{_fmt(metrics.get('FP'), 6, 0)}"
-        f"{_fmt(metrics.get('FN'), 6, 0)}"
-        f"{_fmt(metrics.get('TP'), 6, 0)}"
-    )
-    print()
+    if args.task == "multiclass":
+        print()
+        _print_multiclass_tables(split.y_test, y_pred, metrics)
+        print()
+    else:
+        print()
+        print(
+            f"{'Model':<10}"
+            f"{'accuracy':>10}"
+            f"{'f1':>10}"
+            f"{'recall':>10}"
+            f"{'roc_auc':>10}"
+            f"{'pr_auc':>10}"
+            f"{'TN':>6}"
+            f"{'FP':>6}"
+            f"{'FN':>6}"
+            f"{'TP':>6}"
+        )
+        print("-" * 84)
+        print(
+            f"{'TabNet':<10}"
+            f"{_fmt(metrics.get('accuracy'))}"
+            f"{_fmt(metrics.get('f1'))}"
+            f"{_fmt(metrics.get('recall'))}"
+            f"{_fmt(metrics.get('roc_auc'))}"
+            f"{_fmt(metrics.get('pr_auc'))}"
+            f"{_fmt(metrics.get('TN'), 6, 0)}"
+            f"{_fmt(metrics.get('FP'), 6, 0)}"
+            f"{_fmt(metrics.get('FN'), 6, 0)}"
+            f"{_fmt(metrics.get('TP'), 6, 0)}"
+        )
+        print()
 
 
 
