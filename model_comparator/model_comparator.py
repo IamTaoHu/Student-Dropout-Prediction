@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-COLUMNS = ["Model", "f1", "recall", "roc_auc", "pr_auc", "accuracy", "TN", "FP", "FN", "TP"]
+COLUMNS = ["Model", "Accuracy", "F1-macro", "Recall-macro", "ROC-AUC", "PR-AUC"]
 NULL_STR = "null"
 
 
@@ -127,14 +127,28 @@ def build_rows(base_dir: Path, debug: bool = False) -> List[Dict[str, Any]]:
                 print(f"[DEBUG] {name}: metrics.json missing/invalid at {metrics_path}", file=sys.stderr)
             continue
 
-        row["f1"] = _find_metric(metrics, ["f1", "f1_score", "macro_f1", "f1_macro"])
-        row["recall"] = _find_metric(metrics, ["recall", "recall_score", "macro_recall", "recall_macro"])
-        row["roc_auc"] = _find_metric(metrics, ["roc_auc", "roc_auc_score", "auc_roc"])
-        row["pr_auc"] = _find_metric(metrics, ["pr_auc", "average_precision", "average_precision_score", "auc_pr"])
-        row["accuracy"] = _find_metric(metrics, ["accuracy", "acc", "accuracy_score"])
-
-        cm_terms = _extract_confusion_terms(metrics)
-        row.update(cm_terms)
+        row["F1-macro"] = _find_metric(metrics, ["f1", "f1_score", "macro_f1", "f1_macro"])
+        row["Recall-macro"] = _find_metric(metrics, ["recall", "recall_score", "macro_recall", "recall_macro"])
+        row["ROC-AUC"] = _find_metric(metrics, [
+            "roc_auc_ovr_macro",
+            "roc_auc_ovo_macro",
+            "roc_auc_macro",
+            "roc_auc_weighted",
+            "roc_auc",
+            "roc_auc_score",
+            "auc_roc",
+        ])
+        row["PR-AUC"] = _find_metric(metrics, [
+            "pr_auc_ovr_macro",
+            "pr_auc_ovo_macro",
+            "pr_auc_macro",
+            "pr_auc_weighted",
+            "pr_auc",
+            "average_precision",
+            "average_precision_score",
+            "auc_pr",
+        ])
+        row["Accuracy"] = _find_metric(metrics, ["accuracy", "acc", "accuracy_score"])
 
         rows.append(row)
 

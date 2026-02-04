@@ -1,31 +1,29 @@
 {
   "model_name": "TabNet",
   "num_features": 36,
-  "accuracy": 0.7152542372881356,
-  "f1": 0.6664279344205322,
-  "recall": 0.6687529151497199,
-  "roc_auc": 0.8487679487938378,
-  "pr_auc": 0.7081954111476186,
+  "accuracy": 0.798372513562387,
+  "f1_macro": 0.7337882407423222,
+  "recall_macro": 0.7242790699761046,
+  "roc_auc_ovr_macro": 0.9073914097067415,
+  "pr_auc_ovr_macro": 0.7945085803612421,
   "confusion_matrix": [
     [
-      181,
-      38,
-      65
+      1155,
+      110,
+      156
     ],
     [
-      12,
-      366,
-      64
+      185,
+      352,
+      257
     ],
     [
-      26,
-      47,
-      86
+      70,
+      114,
+      2025
     ]
   ],
-  "TN": null,
-  "FP": null,
-  "FN": null,
-  "TP": null,
-  "classification_report": "              precision    recall  f1-score   support\n\n           0       0.83      0.64      0.72       284\n           1       0.81      0.83      0.82       442\n           2       0.40      0.54      0.46       159\n\n    accuracy                           0.72       885\n   macro avg       0.68      0.67      0.67       885\nweighted avg       0.74      0.72      0.72       885\n"
+  "classification_report": "              precision    recall  f1-score   support\n\n           0       0.82      0.81      0.82      1421\n           1       0.61      0.44      0.51       794\n           2       0.83      0.92      0.87      2209\n\n    accuracy                           0.80      4424\n   macro avg       0.75      0.72      0.73      4424\nweighted avg       0.79      0.80      0.79      4424\n",
+  "roc_auc": null,
+  "pr_auc": null
 }
