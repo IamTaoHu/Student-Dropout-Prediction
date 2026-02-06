@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
-from sklearn.utils.class_weight import compute_class_weight
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
@@ -79,27 +78,7 @@ def _build_trainer(
     output_dir: Path,
     epochs: int,
     task: str,
-    class_weights: Optional[torch.Tensor] = None,
 ):
-    class WeightedTrainer(Trainer):
-        def __init__(self, *args, loss_fn=None, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.loss_fn = loss_fn
-
-        def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-            labels = inputs.get("labels")
-            outputs = model(**inputs)
-            logits = outputs.logits
-            if self.loss_fn is None:
-                return super().compute_loss(
-                    model,
-                    inputs,
-                    return_outputs=return_outputs,
-                    **kwargs
-                )
-            loss = self.loss_fn(logits, labels)
-            return (loss, outputs) if return_outputs else loss
-
     def hf_compute_metrics(eval_pred):
         logits, labels = eval_pred
         probs = torch.softmax(torch.tensor(logits), dim=1).numpy()
@@ -149,10 +128,6 @@ def _build_trainer(
     if "tokenizer" in trainer_sig.parameters:
         trainer_kwargs["tokenizer"] = tokenizer
 
-    if task == "multiclass" and class_weights is not None:
-        device = next(model.parameters()).device
-        loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights.to(device))
-        return WeightedTrainer(**trainer_kwargs, loss_fn=loss_fn)
     return Trainer(**trainer_kwargs)
 
 
@@ -206,8 +181,7 @@ def main() -> None:
         choices=["multiclass", "binary"],
         default="multiclass",
     )
-    parser.add_argument("--model-name", type=str, default="distilbert-base-uncased")
-    parser.add_argument("--use_class_weights", action="store_true")
+    parser.add_argument("--model-name", type=str, default="microsoft/deberta-v3-base")
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--max-length", type=int, default=128)
     parser.add_argument(
@@ -294,16 +268,6 @@ def main() -> None:
         stratify=y_temp,
     )
 
-    class_weights = None
-    if args.task == "multiclass" and args.use_class_weights:
-        weights = compute_class_weight(
-            class_weight="balanced",
-            classes=np.array([0, 1, 2]),
-            y=np.asarray(y_train),
-        )
-        class_weights = torch.tensor(weights, dtype=torch.float)
-        print("[INFO] Class weights:", class_weights.tolist())
-
     model_name = args.model_name
     # model_name = "prajjwal1/bert-tiny"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -323,7 +287,6 @@ def main() -> None:
         output_dir=model_dir,
         epochs=args.epochs,
         task=args.task,
-        class_weights=class_weights,
     )
     trainer.train()
 

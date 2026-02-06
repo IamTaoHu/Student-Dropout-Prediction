@@ -4,3 +4,5 @@ accelerate
 pandas
 numpy
 scikit-learn
+sentencepiece
+protobuf

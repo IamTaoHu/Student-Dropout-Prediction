@@ -1,10 +1,10 @@
-## Dropout LLM Encoder
+## Dropout PLM Encoder
 
 This module trains and uses an encoder-only LLM (no decoder) to produce features for student dropout prediction.
 
 ### Folder structure
 ```
-dropout_llm_encoder/
+dropout_plm_encoder/
   .venv/
   input/
     data.csv
@@ -23,12 +23,11 @@ dropout_llm_encoder/
 ### Setup and training (Windows PowerShell)
 From the repo root:
 ```
-cd code/dropout_llm_encoder
+cd code/dropout_plm_encoder
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python -m src.train_encoder --epochs 8 --max-length 128 --task multiclass --use_class_weights --model-name distilbert-base-uncased
-python -m src.predict_encoder --input_csv "input/data.csv" --output_csv "outputs/predictions.csv" --task multiclass
+python -m pip install -r requirements.txt
+python -m src.train_encoder --epochs 8 --max-length 128 --task multiclass --model-name microsoft/deberta-v3-base
 ```
 
 ### Predict (Windows PowerShell)
@@ -46,4 +45,4 @@ python -m src.predict_encoder --input_csv "input/data.csv" --output_csv "outputs
 - `outputs/metrics.json`: training/evaluation metrics
 - `outputs/predictions.csv`: prediction outputs
 
-The `model_comparator` can read `outputs/metrics.json` because the folder name is `dropout_llm_encoder`.
+The `model_comparator` can read `outputs/metrics.json` because the folder name is `dropout_plm_encoder`.
