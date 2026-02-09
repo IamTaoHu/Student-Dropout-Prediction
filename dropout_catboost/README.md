@@ -1,28 +1,52 @@
-# CatBoost Dropout Prediction
+# CatBoost Student Dropout Prediction (Minimal)
 
-## How to Run
-1) Activate the virtual environment (Windows PowerShell)
+This folder contains a **minimal, self-contained CatBoost pipeline** for **3-class student status prediction**:
+
+- `dropout` → 0  
+- `enrolled` → 1  
+- `graduate` → 2  
+
+The goal is to keep the code **simple, readable, and runnable from a single folder** without package-style imports.
+
+---
+
+## Folder Structure
+dropout_catboost/
+├── train_catboost.py # Train CatBoost (3-class) + sklearn metrics
+├── predict_catboost.py # Predict with trained model (CLI supported)
+├── data/
+│ └── data.csv # Input dataset
+├── outputs/
+│ ├── catboost_model.cbm # Trained model
+│ ├── metrics.json # Saved evaluation metrics
+│ └── predictions.csv # Prediction results
+├── _optional/ # Advanced / non-minimal scripts (SHAP, explainability)
+├── requirements.txt
+└── README.md
+
+---
+
+## Environment Setup (Windows PowerShell)
+
 ```powershell
 .\.venv\Scripts\Activate.ps1
-```
-2) Train the baseline CatBoost model
-```powershell
-python -m src.train_catboost
-```
-3) Run the feature group study
-```powershell
-python -m src.train_catboost_feature_groups
-```
-4) Run explainability (if available)
-```powershell
-python -m src.run_explain
-```
 
-## SHAP (Full Model)
-```powershell
-python -m src.run_shap_full_catboost
-```
-Outputs are saved under `outputs/shap_full/run_YYYYMMDD_HHMMSS/`.
+Install dependencies if needed:
+pip install -r requirements.txt
 
-## Outputs
-Artifacts and evaluation outputs are saved under `outputs/`, with per-run folders for feature group runs.
+Run training from this folder:
+py train_catboost.py
+
+Run Prediction (Default)
+
+Use the trained model to predict on the default dataset:
+py predict_catboost.py
+
+ Run Prediction (Custom Input via CLI)
+You can override the input file using --input:
+py predict_catboost.py --input data/data.csv
+
+Optional arguments:
+py predict_catboost.py --input data/data.csv --output outputs/preds.csv
+py predict_catboost.py --model outputs/catboost_model.cbm
+```

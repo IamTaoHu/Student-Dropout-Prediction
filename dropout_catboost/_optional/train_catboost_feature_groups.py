@@ -2,15 +2,26 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import json
 
 import pandas as pd
 from catboost import CatBoostClassifier
-from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 
-from src import config
-from src.evaluate import compute_metrics, plot_pr_curve, plot_roc_curve
-from src.utils import save_json
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = (PROJECT_ROOT / "data" / "data.csv").resolve()
+OUTPUT_DIR = (PROJECT_ROOT / "outputs").resolve()
+RANDOM_STATE = 42
+TEST_SIZE = 0.2
+
+
+def save_json(obj: object, path: str | Path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2, ensure_ascii=False)
+    return path
 
 TARGET_CANDIDATES = [
     "Target",
@@ -23,7 +34,7 @@ TARGET_CANDIDATES = [
     "Class",
     "class",
 ]
-TARGET_MAPPING = {"dropout": 1, "enrolled": 0, "graduate": 0}
+TARGET_MAPPING = {"dropout": 0, "enrolled": 1, "graduate": 2}
 
 GROUP_PATTERNS = {
     "G1_demographic": [
@@ -74,8 +85,11 @@ def _detect_target_column(columns: pd.Index) -> str:
     raise ValueError(f"Missing target column. Available columns: {columns.tolist()}")
 
 
-def _map_target(series: pd.Series) -> pd.Series:
+def _map_target(series: pd.Series, column_name: str) -> pd.Series:
     normalized = series.astype(str).str.strip().str.lower()
+    unexpected = sorted(set(normalized.dropna().unique()) - set(TARGET_MAPPING))
+    if unexpected:
+        raise ValueError(f"Unexpected target labels in {column_name}: {unexpected}")
     return normalized.map(TARGET_MAPPING)
 
 
@@ -121,7 +135,7 @@ def _run_experiment(
     train_idx: pd.Index,
     test_idx: pd.Index,
     feature_columns: list[str],
-) -> tuple[dict, pd.Series, pd.Series]:
+) -> dict:
     X_selected = X[feature_columns].copy()
 
     cat_cols = X_selected.select_dtypes(include=["object"]).columns.tolist()
@@ -137,15 +151,16 @@ def _run_experiment(
     cat_feature_indices = [feature_names.index(c) for c in cat_cols]
 
     model = CatBoostClassifier(
-        loss_function="Logloss",
-        eval_metric="AUC",
+        loss_function="MultiClass",
+        eval_metric="MultiClass",
         iterations=2000,
         learning_rate=0.05,
         depth=6,
-        random_seed=42,
+        random_seed=RANDOM_STATE,
         verbose=200,
         allow_writing_files=False,
         auto_class_weights="Balanced",
+        early_stopping_rounds=200,
     )
 
     model.fit(
@@ -156,30 +171,32 @@ def _run_experiment(
         use_best_model=True,
     )
 
-    y_proba = model.predict_proba(X_test)[:, 1]
-    y_pred = (y_proba >= 0.5).astype(int)
+    y_proba = model.predict_proba(X_test)
+    y_pred = model.predict(X_test)
 
-    metrics = compute_metrics(y_test, y_pred, y_proba)
     acc = accuracy_score(y_test, y_pred)
-    tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
-    metrics.update(
-        {
-            "accuracy": float(acc),
-            "tn": int(tn),
-            "fp": int(fp),
-            "fn": int(fn),
-            "tp": int(tp),
-        }
+    cm = confusion_matrix(y_test, y_pred).tolist()
+    report = classification_report(
+        y_test,
+        y_pred,
+        target_names=["dropout", "enrolled", "graduate"],
+        digits=4,
+        output_dict=True,
     )
-    return metrics, y_test, y_proba
+    metrics = {
+        "accuracy": float(acc),
+        "confusion_matrix": cm,
+        "classification_report": report,
+    }
+    return metrics
 
 
 def main() -> None:
-    df = pd.read_csv(config.DATA_PATH, sep=None, engine="python")
+    df = pd.read_csv(DATA_PATH, sep=None, engine="python")
     df.columns = df.columns.str.replace("\ufeff", "", regex=False).str.strip()
 
     target_col = _detect_target_column(df.columns)
-    y = _map_target(df[target_col])
+    y = _map_target(df[target_col], target_col)
     X = df.drop(columns=[target_col])
 
     valid_mask = y.notna()
@@ -190,53 +207,43 @@ def main() -> None:
 
     train_idx, test_idx = train_test_split(
         X.index,
-        test_size=config.TEST_SIZE,
-        random_state=42,
+        test_size=TEST_SIZE,
+        random_state=RANDOM_STATE,
         stratify=y,
     )
 
     results: list[dict] = []
-    full_curve_data: tuple[pd.Series, pd.Series] | None = None
     for experiment_name, groups in EXPERIMENTS:
         feature_columns = _select_features(group_columns, groups, experiment_name)
-        metrics, y_test, y_proba = _run_experiment(
+        metrics = _run_experiment(
             X,
             y,
             train_idx,
             test_idx,
             feature_columns,
         )
+        macro_f1 = metrics["classification_report"]["macro avg"]["f1-score"]
+        weighted_f1 = metrics["classification_report"]["weighted avg"]["f1-score"]
         results.append(
             {
                 "experiment": experiment_name,
                 "groups": groups,
                 "num_features": len(feature_columns),
                 "features": feature_columns,
+                "accuracy": float(metrics["accuracy"]),
+                "macro_f1": float(macro_f1),
+                "weighted_f1": float(weighted_f1),
                 **metrics,
             }
         )
-        if experiment_name == "Full":
-            full_curve_data = (y_test, y_proba)
 
     results_df = pd.DataFrame(results)
-    summary_columns = [
-        "experiment",
-        "num_features",
-        "f1",
-        "recall",
-        "roc_auc",
-        "pr_auc",
-        "accuracy",
-    ]
-    if "accuracy" not in results_df.columns:
-        print(
-            "[WARN] accuracy column missing. Available columns:",
-            results_df.columns.tolist(),
-        )
-    existing_cols = [c for c in summary_columns if c in results_df.columns]
-    summary_df = results_df[existing_cols].copy()
-    metric_cols = [c for c in ["f1", "recall", "roc_auc", "pr_auc", "accuracy"] if c in summary_df.columns]
-    summary_df[metric_cols] = summary_df[metric_cols].astype(float).round(4)
+    summary_df = results_df[
+        ["experiment", "num_features", "accuracy", "macro_f1", "weighted_f1"]
+    ].copy()
+    summary_df[["accuracy", "macro_f1", "weighted_f1"]] = summary_df[
+        ["accuracy", "macro_f1", "weighted_f1"]
+    ].astype(float).round(4)
 
     print("\nCatBoost Feature Group Performance Summary")
     print(summary_df.to_string(index=False))
@@ -244,25 +251,12 @@ def main() -> None:
     print(summary_df.to_markdown(index=False))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(config.OUTPUT_DIR) / "catboost_feature_groups" / f"run_{timestamp}"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    outdir = OUTPUT_DIR / "feature_groups" / f"run_{timestamp}"
+    outdir.mkdir(parents=True, exist_ok=True)
 
-    base_output_dir = Path(config.OUTPUT_DIR)
-    base_output_dir.mkdir(parents=True, exist_ok=True)
-    summary_df.to_csv(base_output_dir / "catboost_feature_group_summary.csv", index=False)
-    summary_df.to_json(
-        base_output_dir / "catboost_feature_group_summary.json",
-        orient="records",
-        indent=2,
-    )
-
-    save_json(results, output_dir / "feature_group_results.json")
-    results_df.to_csv(output_dir / "feature_group_results.csv", index=False)
-
-    if full_curve_data is not None:
-        y_test, y_proba = full_curve_data
-        plot_roc_curve(y_test, y_proba, output_dir / "full_roc_curve.png")
-        plot_pr_curve(y_test, y_proba, output_dir / "full_pr_curve.png")
+    summary_df.to_csv(outdir / "summary.csv", index=False)
+    save_json(summary_df.to_dict(orient="records"), outdir / "summary.json")
+    save_json(results, outdir / "details.json")
 
 
 if __name__ == "__main__":

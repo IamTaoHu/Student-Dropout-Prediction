@@ -1,15 +1,34 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import pandas as pd
 from catboost import CatBoostClassifier
+import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    ConfusionMatrixDisplay,
+)
 
-from src import config
-from src.evaluate import compute_metrics, plot_pr_curve, plot_roc_curve
-from src.utils import save_json
+# --- Minimal config (local folder defaults) ---
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_PATH = (PROJECT_ROOT / "data" / "data.csv").resolve()
+OUTPUT_DIR = (PROJECT_ROOT / "outputs").resolve()
+RANDOM_STATE = 42
+TEST_SIZE = 0.2
+
+
+def save_json(obj: dict, path: str | Path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2, sort_keys=True)
+    return path
+
 
 TARGET_CANDIDATES = [
     "Target",
@@ -22,7 +41,11 @@ TARGET_CANDIDATES = [
     "Class",
     "class",
 ]
-TARGET_MAPPING = {"dropout": 1, "enrolled": 0, "graduate": 0}
+TARGET_MAPPING = {
+    "dropout": 0,
+    "enrolled": 1,
+    "graduate": 2,
+}
 
 
 def _detect_target_column(columns: pd.Index) -> str:
@@ -41,7 +64,7 @@ def _validate_and_map_target(series: pd.Series, column_name: str) -> pd.Series:
 
 
 def main() -> None:
-    df = pd.read_csv(config.DATA_PATH, sep=None, engine="python")
+    df = pd.read_csv(DATA_PATH, sep=None, engine="python")
     df.columns = df.columns.str.replace("\ufeff", "", regex=False).str.strip()
 
     target_col = _detect_target_column(df.columns)
@@ -69,8 +92,8 @@ def main() -> None:
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
-        test_size=config.TEST_SIZE,
-        random_state=config.RANDOM_STATE,
+        test_size=TEST_SIZE,
+        random_state=RANDOM_STATE,
         stratify=y,
     )
 
@@ -78,12 +101,12 @@ def main() -> None:
     cat_feature_indices = [feature_names.index(c) for c in cat_cols]
 
     model = CatBoostClassifier(
-        loss_function="Logloss",
-        eval_metric="AUC",
+        loss_function="MultiClass",
+        eval_metric="MultiClass",
         iterations=5000,
         learning_rate=0.05,
         depth=6,
-        random_seed=config.RANDOM_STATE,
+        random_seed=RANDOM_STATE,
         auto_class_weights="Balanced",
         verbose=200,
         early_stopping_rounds=200,
@@ -98,38 +121,46 @@ def main() -> None:
     )
 
     y_pred = model.predict(X_test)
-    y_proba = model.predict_proba(X_test)[:, 1]
 
-    metrics = compute_metrics(y_test, y_pred, y_proba)
     accuracy = accuracy_score(y_test, y_pred)
-    tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
-    metrics["accuracy"] = float(accuracy)
-    metrics["confusion_matrix"] = {
-        "tn": int(tn),
-        "fp": int(fp),
-        "fn": int(fn),
-        "tp": int(tp),
+    report_dict = classification_report(
+        y_test,
+        y_pred,
+        target_names=["dropout", "enrolled", "graduate"],
+        digits=4,
+        output_dict=True,
+    )
+    metrics = {
+        "accuracy": float(accuracy),
+        "confusion_matrix": confusion_matrix(y_test, y_pred).tolist(),
+        "classification_report": report_dict,
     }
 
-    outdir = Path(config.OUTPUT_DIR)
+    outdir = Path(OUTPUT_DIR)
     outdir.mkdir(parents=True, exist_ok=True)
 
     save_json(metrics, outdir / "metrics.json")
-    plot_roc_curve(y_test, y_proba, outdir / "roc_curve.png")
-    plot_pr_curve(y_test, y_proba, outdir / "pr_curve.png")
 
     model_path = outdir / "catboost_model.cbm"
     model.save_model(model_path)
 
-    print("CatBoost Metrics:")
-    print(f"F1: {metrics['f1']:.4f}")
-    print(f"Recall: {metrics['recall']:.4f}")
-    print(f"ROC-AUC: {metrics['roc_auc']:.4f}")
-    print(f"PR-AUC: {metrics['pr_auc']:.4f}")
-    print(f"Accuracy: {metrics['accuracy']:.4f}")
-    print("Confusion Matrix:")
-    print(f"[[{tn} {fp}]")
-    print(f" [{fn} {tp}]]")
+    print("\nCatBoost Metrics (3-class, sklearn):")
+    print(
+        classification_report(
+            y_test,
+            y_pred,
+            target_names=["dropout", "enrolled", "graduate"],
+            digits=4,
+        )
+    )
+
+    ConfusionMatrixDisplay.from_predictions(
+        y_test,
+        y_pred,
+        display_labels=["dropout", "enrolled", "graduate"],
+    )
+    plt.title("Confusion Matrix (3-class)")
+    plt.show()
     print(f"Saved model to: {model_path}")
 
 
