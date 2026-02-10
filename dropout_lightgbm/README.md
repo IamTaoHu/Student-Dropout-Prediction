@@ -12,8 +12,9 @@ Copy the dataset to `data/data.csv`.
 
 ## Run
 ```powershell
-python -m src.train_lightgbm
-python -m src.train_lightgbm_feature_groups
+python src\train_lightgbm.py
+python src\train_lightgbm_feature_groups
+python src\predict_lightgbm.py
 ```
 
 ## Outputs

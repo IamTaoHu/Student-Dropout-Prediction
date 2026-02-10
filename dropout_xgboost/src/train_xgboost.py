@@ -1,18 +1,39 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import joblib
+import matplotlib.pyplot as plt
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
+from sklearn.metrics import (
+    ConfusionMatrixDisplay,
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+)
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
-import xgboost as xgb
+from xgboost import XGBClassifier
 
-from src import config
-from src.evaluate import compute_metrics, plot_pr_curve, plot_roc_curve
-from src.utils import load_csv, save_json
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = (PROJECT_ROOT / "data" / "data.csv").resolve()
+OUTPUT_DIR = (PROJECT_ROOT / "outputs").resolve()
+RANDOM_STATE = 42
+TEST_SIZE = 0.2
+
+
+def save_json(obj: dict, path: str | Path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2, sort_keys=True)
+    return path
+
 
 TARGET_CANDIDATES = [
     "Target",
@@ -25,7 +46,8 @@ TARGET_CANDIDATES = [
     "Class",
     "class",
 ]
-TARGET_MAPPING = {"dropout": 1, "enrolled": 0, "graduate": 0}
+TARGET_MAPPING = {"dropout": 0, "enrolled": 1, "graduate": 2}
+LABELS = ["dropout", "enrolled", "graduate"]
 
 
 def _detect_target_column(columns: pd.Index) -> str:
@@ -35,27 +57,28 @@ def _detect_target_column(columns: pd.Index) -> str:
     raise ValueError(f"Missing target column. Available columns: {columns.tolist()}")
 
 
-def _normalize_target(series: pd.Series) -> pd.Series:
-    return series.astype(str).str.strip().str.lower()
+def _map_target(series: pd.Series) -> pd.Series:
+    if pd.api.types.is_numeric_dtype(series):
+        return series.astype(int)
+    normalized = series.astype(str).str.strip().str.lower()
+    unexpected = sorted(set(normalized.dropna().unique()) - set(TARGET_MAPPING.keys()))
+    if unexpected:
+        raise ValueError(f"Unexpected target labels: {unexpected}")
+    return normalized.map(TARGET_MAPPING)
 
 
 def main() -> None:
-    df = load_csv(Path(config.DATA_PATH))
+    df = pd.read_csv(DATA_PATH, sep=None, engine="python")
+    df.columns = df.columns.str.replace("\ufeff", "", regex=False).str.strip()
+
     target_column = _detect_target_column(df.columns)
     print(f"Detected target column: {target_column}")
 
-    raw_unique = sorted(df[target_column].dropna().unique().tolist())
-    print(f"Raw unique values in {target_column}: {raw_unique}")
-
-    normalized = _normalize_target(df[target_column])
-    normalized_unique = sorted(normalized.dropna().unique().tolist())
-    print("Normalized target values:", normalized_unique)
-
-    y = normalized.map(TARGET_MAPPING)
+    y = _map_target(df[target_column])
     X = df.drop(columns=[target_column])
-    valid_mask = y.notna()
-    y = y[valid_mask]
-    X = X.loc[valid_mask]
+    valid = y.notna()
+    y = y[valid]
+    X = X.loc[valid]
     print("Class distribution after mapping:")
     print(y.value_counts())
 
@@ -78,76 +101,82 @@ def main() -> None:
         ]
     )
 
+    model = XGBClassifier(
+        objective="multi:softprob",
+        num_class=3,
+        n_estimators=1000,
+        learning_rate=0.05,
+        max_depth=6,
+        subsample=0.9,
+        colsample_bytree=0.9,
+        reg_lambda=1.0,
+        random_state=RANDOM_STATE,
+        eval_metric="mlogloss",
+        tree_method="hist",
+    )
+
+    clf = Pipeline(
+        steps=[
+            ("preprocess", preprocessor),
+            ("model", model),
+        ]
+    )
+
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
-        test_size=config.TEST_SIZE,
-        random_state=config.RANDOM_STATE,
+        test_size=TEST_SIZE,
+        random_state=RANDOM_STATE,
         stratify=y,
     )
 
-    X_train_sub, X_val, y_train_sub, y_val = train_test_split(
-        X_train,
-        y_train,
-        test_size=0.2,
-        random_state=config.RANDOM_STATE,
-        stratify=y_train,
+    clf.fit(X_train, y_train)
+
+    y_pred = clf.predict(X_test)
+
+    print("\nXGBoost Metrics (3-class, sklearn):")
+    print(
+        classification_report(
+            y_test,
+            y_pred,
+            target_names=LABELS,
+            digits=4,
+            zero_division=0,
+        )
     )
 
-    X_train_trans = preprocessor.fit_transform(X_train_sub)
-    X_val_trans = preprocessor.transform(X_val)
-    X_test_trans = preprocessor.transform(X_test)
+    ConfusionMatrixDisplay.from_predictions(
+        y_test,
+        y_pred,
+        display_labels=LABELS,
+    )
+    plt.title("Confusion Matrix (3-class)")
+    plt.show()
 
-    dtrain = xgb.DMatrix(X_train_trans, label=y_train_sub)
-    dval = xgb.DMatrix(X_val_trans, label=y_val)
-    dtest = xgb.DMatrix(X_test_trans, label=y_test)
-
-    params = {
-        "objective": "binary:logistic",
-        "eval_metric": "auc",
-        "eta": 0.05,
-        "max_depth": 6,
-        "subsample": 0.9,
-        "colsample_bytree": 0.9,
-        "lambda": 1.0,
-        "seed": 42,
-        "tree_method": "hist",
+    metrics = {
+        "accuracy": float(accuracy_score(y_test, y_pred)),
+        "classification_report": classification_report(
+            y_test,
+            y_pred,
+            target_names=LABELS,
+            digits=4,
+            zero_division=0,
+            output_dict=True,
+        ),
+        "confusion_matrix": confusion_matrix(y_test, y_pred, labels=[0, 1, 2]).tolist(),
     }
 
-    booster = xgb.train(
-        params=params,
-        dtrain=dtrain,
-        num_boost_round=1000,
-        evals=[(dval, "val")],
-        early_stopping_rounds=50,
-        verbose_eval=False,
-    )
-    best_iter = getattr(booster, "best_iteration", None)
+    (OUTPUT_DIR / "models").mkdir(parents=True, exist_ok=True)
+    (OUTPUT_DIR / "metrics").mkdir(parents=True, exist_ok=True)
+    (OUTPUT_DIR / "predictions").mkdir(parents=True, exist_ok=True)
 
-    y_proba = booster.predict(dtest)
-    y_pred = (y_proba >= 0.5).astype(int)
+    model_path = OUTPUT_DIR / "models" / "xgboost_model.joblib"
+    joblib.dump(clf, model_path)
 
-    metrics = compute_metrics(y_test, y_pred, y_proba)
-    metrics["num_features"] = int(X_test_trans.shape[1])
-    metrics["model_name"] = "XGBoost"
+    metrics_path = OUTPUT_DIR / "metrics" / "metrics.json"
+    save_json(metrics, metrics_path)
 
-    print("Metrics:")
-    print(f"F1: {metrics['f1']:.4f}")
-    print(f"Recall: {metrics['recall']:.4f}")
-    print(f"ROC-AUC: {metrics['roc_auc']:.4f}")
-    print(f"PR-AUC: {metrics['pr_auc']:.4f}")
-    print(f"Accuracy: {metrics['accuracy']:.4f}")
-    print(f"Best iteration: {best_iter}")
-    print("Confusion Matrix:")
-    print(metrics["confusion_matrix"])
-    print("Classification Report:")
-    print(metrics["classification_report"])
-
-    output_dir = Path(config.OUTPUT_DIR)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    save_json(output_dir / "metrics.json", metrics)
-    plot_roc_curve(y_test, y_proba, output_dir / "roc_curve.png")
-    plot_pr_curve(y_test, y_proba, output_dir / "pr_curve.png")
+    print(f"Saved model to: {model_path}")
 
 
 if __name__ == "__main__":

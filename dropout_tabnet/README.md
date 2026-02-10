@@ -13,8 +13,6 @@ TabNet training and inference for tabular student dropout prediction.
 python -m venv .venv
 # Windows
 .venv\Scripts\activate
-# macOS/Linux
-source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -26,18 +24,15 @@ pip install -r requirements.txt
 ## Train
 Run from `code/dropout_tabnet`:
 ```bash
-python -m src.train_tabnet --data_path "data/data.csv"
+python src\train_tabnet --data_path "data/data.csv"
 ```
 
 ## Predict
 ```bash
-python -m src.predict_tabnet --data_path "data/data.csv"
+python src\predict_tabnet --data_path "data/data.csv"
 ```
 
 ## Outputs
 - `outputs/models/tabnet_model.zip`, `outputs/models/scaler.joblib`, `outputs/models/meta.json`
 - `outputs/metrics/metrics.json` and `outputs/metrics/metrics_predict.json`
 - `outputs/predictions/test_predictions.csv` and `outputs/predictions/predictions.csv`
-
-## Metrics included
-F1, Recall, ROC-AUC, PR-AUC, Accuracy, Confusion Matrix (TN, FP, FN, TP).

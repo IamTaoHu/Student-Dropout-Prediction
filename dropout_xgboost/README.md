@@ -12,8 +12,8 @@ Copy the dataset to `data/data.csv`.
 
 ## Run
 ```powershell
-python -m src.train_xgboost
-python -m src.train_xgboost_feature_groups
+python src\train_xgboost
+python src\train_xgboost_feature_groups
 ```
 
 ## Outputs

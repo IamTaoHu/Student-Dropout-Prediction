@@ -1,38 +1,27 @@
-# Logistic Regression Baseline for Dropout Prediction
+# Logistic Regression Baseline
 
-This project provides a simple logistic regression baseline to predict student dropout.
-
-## Setup
-1) Create a virtual environment
-```powershell
-python -m venv .venv
-```
-2) Activate it
-```powershell
-.venv\Scripts\Activate.ps1
-```
-3) Install dependencies
-```powershell
-pip install -r requirements.txt
-```
+Minimal logistic regression baseline for student dropout prediction.
 
 ## Data
-Place your dataset at `dropout_lr_baseline/data/data.csv` (see `DATA_PATH` in `.env.example`).
+Place your dataset at `data/data.csv`. The target column is auto-detected from common names
+(`Target`, `Status`, `Outcome`, `Class`, etc.).
 
-## How to Run
-1) Activate the virtual environment
+3-class mapping:
+- dropout = 0
+- enrolled = 1
+- graduate = 2
+
+## Training
 ```powershell
-.\.venv\Scripts\Activate.ps1
+py src\train_logreg.py
 ```
-2) Run the baseline logistic regression
+
+## Prediction
 ```powershell
-python -m src.train_logreg
-```
-3) Run the feature-group study
-```powershell
-python -m src.train_logreg_feature_groups
+py src\predict_logreg.py --input data\data.csv
 ```
 
 ## Outputs
-Training runs write artifacts and evaluation outputs to `outputs/` (e.g., `outputs/metrics.json` and
-`outputs/feature_group_results.json`).
+- `outputs/model.joblib`
+- `outputs/metrics.json`
+- `outputs/predictions.csv`

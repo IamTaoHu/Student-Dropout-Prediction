@@ -14,8 +14,8 @@ from sklearn.metrics import (
     ConfusionMatrixDisplay,
 )
 
-# --- Minimal config (local folder defaults) ---
-PROJECT_ROOT = Path(__file__).resolve().parent
+# --- config (local folder defaults) ---
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = (PROJECT_ROOT / "data" / "data.csv").resolve()
 OUTPUT_DIR = (PROJECT_ROOT / "outputs").resolve()
 RANDOM_STATE = 42

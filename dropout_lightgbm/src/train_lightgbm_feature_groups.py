@@ -1,18 +1,20 @@
 from __future__ import annotations
 
-from pathlib import Path
+import warnings
 
 import pandas as pd
-from lightgbm import LGBMClassifier, early_stopping, log_evaluation
+from lightgbm import LGBMClassifier, early_stopping
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
+from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
-from src import config
-from src.evaluate import compute_metrics
-from src.utils import load_csv, save_json
+from config import *
+from utils import load_csv, save_json
+
+warnings.filterwarnings("ignore", message="X does not have valid feature names*")
 
 TARGET_CANDIDATES = [
     "Target",
@@ -25,7 +27,7 @@ TARGET_CANDIDATES = [
     "Class",
     "class",
 ]
-TARGET_MAPPING = {"dropout": 1, "enrolled": 0, "graduate": 0}
+TARGET_MAPPING = {"dropout": 0, "enrolled": 1, "graduate": 2}
 
 GROUP_PATTERNS = {
     "G1_demographic": [
@@ -122,8 +124,10 @@ def _run_experiment(
     train_idx: pd.Index,
     test_idx: pd.Index,
     feature_columns: list[str],
+    experiment_name: str,
 ) -> dict:
     X_selected = X[feature_columns]
+    num_features = len(feature_columns)
     numeric_features = X_selected.select_dtypes(exclude=["object"]).columns.tolist()
     categorical_features = X_selected.select_dtypes(include=["object"]).columns.tolist()
 
@@ -152,7 +156,7 @@ def _run_experiment(
         X_train,
         y_train,
         test_size=0.2,
-        random_state=config.RANDOM_STATE,
+        random_state=RANDOM_STATE,
         stratify=y_train,
     )
 
@@ -168,99 +172,104 @@ def _run_experiment(
         colsample_bytree=0.9,
         random_state=42,
         class_weight="balanced",
+        verbose=-1,
     )
 
     model.fit(
         X_train_trans,
         y_train_sub,
         eval_set=[(X_val_trans, y_val)],
-        callbacks=[early_stopping(stopping_rounds=50), log_evaluation(period=0)],
+        callbacks=[early_stopping(stopping_rounds=50)],
     )
 
-    y_proba = model.predict_proba(X_test_trans)[:, 1]
-    y_pred = (y_proba >= 0.5).astype(int)
+    y_pred = model.predict(X_test_trans)
 
-    metrics = compute_metrics(y_test, y_pred, y_proba)
-    metrics["num_features"] = int(X_test_trans.shape[1])
+    metrics = {
+        "accuracy": float(accuracy_score(y_test, y_pred)),
+        "macro_f1": float(f1_score(y_test, y_pred, average="macro")),
+        "weighted_f1": float(f1_score(y_test, y_pred, average="weighted")),
+        "num_features": int(num_features),
+    }
     return metrics
 
 
 def main() -> None:
-    df = load_csv(Path(config.DATA_PATH))
+    df = load_csv(DATA_PATH)
     target_column = _detect_target_column(df.columns)
+    print(f"Detected target column: {target_column}")
+
+    raw_unique = sorted(df[target_column].dropna().unique().tolist())
+    print(f"Raw unique values in Target: {raw_unique}")
 
     normalized = _normalize_target(df[target_column])
+    normalized_unique = sorted(normalized.dropna().unique().tolist())
+    print(f"Normalized unique values: {normalized_unique}")
+
     y = normalized.map(TARGET_MAPPING)
     X = df.drop(columns=[target_column])
     valid_mask = y.notna()
     y = y[valid_mask]
     X = X.loc[valid_mask]
+    print("Class distribution after mapping:")
+    print(y.value_counts())
 
     group_columns = _build_group_columns(X.columns)
 
     train_idx, test_idx = train_test_split(
         X.index,
-        test_size=config.TEST_SIZE,
-        random_state=config.RANDOM_STATE,
+        test_size=TEST_SIZE,
+        random_state=RANDOM_STATE,
         stratify=y,
     )
 
     results: list[dict] = []
     for experiment_name, groups in EXPERIMENTS:
         feature_columns = _select_features(group_columns, groups, experiment_name)
-        metrics = _run_experiment(X, y, train_idx, test_idx, feature_columns)
+        metrics = _run_experiment(
+            X,
+            y,
+            train_idx,
+            test_idx,
+            feature_columns,
+            experiment_name,
+        )
         results.append(
             {
                 "experiment": experiment_name,
                 "groups": groups,
                 "num_features": metrics["num_features"],
                 "features": feature_columns,
-                "f1": metrics["f1"],
-                "recall": metrics["recall"],
-                "roc_auc": metrics["roc_auc"],
-                "pr_auc": metrics["pr_auc"],
                 "accuracy": metrics["accuracy"],
+                "macro_f1": metrics["macro_f1"],
+                "weighted_f1": metrics["weighted_f1"],
                 "model_name": "LightGBM",
-                "confusion_matrix": metrics["confusion_matrix"],
-                "classification_report": metrics["classification_report"],
             }
         )
 
     results_df = pd.DataFrame(results)
-    summary_columns = [
-        "experiment",
-        "num_features",
-        "f1",
-        "recall",
-        "roc_auc",
-        "pr_auc",
-        "accuracy",
-    ]
-    existing_cols = [c for c in summary_columns if c in results_df.columns]
-    summary_df = results_df[existing_cols].copy()
+    summary_df = results_df[
+        ["experiment", "num_features", "accuracy", "macro_f1", "weighted_f1"]
+    ].copy()
+    summary_df[["accuracy", "macro_f1", "weighted_f1"]] = summary_df[
+        ["accuracy", "macro_f1", "weighted_f1"]
+    ].astype(float).round(4)
 
-    metric_cols = ["f1", "recall", "roc_auc", "pr_auc", "accuracy"]
-    metric_cols = [c for c in metric_cols if c in summary_df.columns]
-    summary_df[metric_cols] = summary_df[metric_cols].astype(float).round(4)
+    print()
     print("LightGBM Feature Group Performance Summary")
     print(summary_df.to_string(index=False))
-    print("\nMarkdown table:\n")
-    try:
-        print(summary_df.to_markdown(index=False))
-    except ImportError:
-        print("[WARN] 'tabulate' not installed. Falling back to plain text table.")
-        print(summary_df.to_string(index=False))
+    print()
+    print("Markdown table:")
+    print(summary_df.to_markdown(index=False))
 
-    output_dir = Path(config.OUTPUT_DIR)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    summary_df.to_csv(output_dir / "lightgbm_feature_group_summary.csv", index=False)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    summary_df.to_csv(OUTPUT_DIR / "lightgbm_feature_group_summary.csv", index=False)
     summary_df.to_json(
-        output_dir / "lightgbm_feature_group_summary.json",
+        OUTPUT_DIR / "lightgbm_feature_group_summary.json",
         orient="records",
         indent=2,
     )
-    save_json(output_dir / "feature_group_results.json", results)
-    results_df.to_csv(output_dir / "feature_group_results.csv", index=False)
+    save_json(OUTPUT_DIR / "feature_group_results.json", results)
+    results_df.to_csv(OUTPUT_DIR / "feature_group_results.csv", index=False)
 
 
 if __name__ == "__main__":

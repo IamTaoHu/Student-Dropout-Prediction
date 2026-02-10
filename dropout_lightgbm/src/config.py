@@ -21,8 +21,8 @@ _load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT", str(PROJECT_ROOT))).resolve()
 
-DATA_PATH = (PROJECT_ROOT / os.getenv("DATA_PATH", "./data/data.csv")).resolve()
-OUTPUT_DIR = (PROJECT_ROOT / os.getenv("OUTPUT_DIR", "./outputs")).resolve()
+DATA_PATH = (PROJECT_ROOT / "data" / "data.csv").resolve()
+OUTPUT_DIR = (PROJECT_ROOT / "outputs").resolve()
 
 RANDOM_STATE = int(os.getenv("RANDOM_STATE", "42"))
 TEST_SIZE = float(os.getenv("TEST_SIZE", "0.2"))

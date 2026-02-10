@@ -35,18 +35,17 @@ Install dependencies if needed:
 pip install -r requirements.txt
 
 Run training from this folder:
-py train_catboost.py
+py src\train_catboost.py
 
 Run Prediction (Default)
-
 Use the trained model to predict on the default dataset:
-py predict_catboost.py
+py src\predict_catboost.py
 
- Run Prediction (Custom Input via CLI)
+Run Prediction (Custom Input via CLI)
 You can override the input file using --input:
-py predict_catboost.py --input data/data.csv
+py src\predict_catboost.py --input data/data.csv
 
 Optional arguments:
-py predict_catboost.py --input data/data.csv --output outputs/preds.csv
-py predict_catboost.py --model outputs/catboost_model.cbm
+py src\predict_catboost.py --input data/data.csv --output outputs/preds.csv
+py src\predict_catboost.py --model outputs/catboost_model.cbm
 ```

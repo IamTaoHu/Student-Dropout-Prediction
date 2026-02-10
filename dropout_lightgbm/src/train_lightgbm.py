@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-from pathlib import Path
+import pickle
 
 import pandas as pd
 from lightgbm import LGBMClassifier, early_stopping, log_evaluation
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
+from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
-from src import config
-from src.evaluate import compute_metrics, plot_pr_curve, plot_roc_curve
-from src.utils import load_csv, save_json
+from config import *
+from utils import load_csv, save_json
 
 TARGET_CANDIDATES = [
     "Target",
@@ -25,7 +25,8 @@ TARGET_CANDIDATES = [
     "Class",
     "class",
 ]
-TARGET_MAPPING = {"dropout": 1, "enrolled": 0, "graduate": 0}
+TARGET_MAPPING = {"dropout": 0, "enrolled": 1, "graduate": 2}
+SHOW_CM_PLOT = True
 
 
 def _detect_target_column(columns: pd.Index) -> str:
@@ -40,16 +41,16 @@ def _normalize_target(series: pd.Series) -> pd.Series:
 
 
 def main() -> None:
-    df = load_csv(Path(config.DATA_PATH))
+    df = load_csv(DATA_PATH)
     target_column = _detect_target_column(df.columns)
     print(f"Detected target column: {target_column}")
 
     raw_unique = sorted(df[target_column].dropna().unique().tolist())
-    print(f"Raw unique values in {target_column}: {raw_unique}")
+    print(f"Raw unique values in Target: {raw_unique}")
 
     normalized = _normalize_target(df[target_column])
     normalized_unique = sorted(normalized.dropna().unique().tolist())
-    print("Normalized target values:", normalized_unique)
+    print(f"Normalized unique values: {normalized_unique}")
 
     y = normalized.map(TARGET_MAPPING)
     X = df.drop(columns=[target_column])
@@ -81,8 +82,8 @@ def main() -> None:
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
-        test_size=config.TEST_SIZE,
-        random_state=config.RANDOM_STATE,
+        test_size=TEST_SIZE,
+        random_state=RANDOM_STATE,
         stratify=y,
     )
 
@@ -90,7 +91,7 @@ def main() -> None:
         X_train,
         y_train,
         test_size=0.2,
-        random_state=config.RANDOM_STATE,
+        random_state=RANDOM_STATE,
         stratify=y_train,
     )
 
@@ -115,31 +116,55 @@ def main() -> None:
         callbacks=[early_stopping(stopping_rounds=50), log_evaluation(period=0)],
     )
 
-    y_proba = model.predict_proba(X_test_trans)[:, 1]
-    y_pred = (y_proba >= 0.5).astype(int)
+    y_pred = model.predict(X_test_trans)
 
-    metrics = compute_metrics(y_test, y_pred, y_proba)
-    metrics["num_features"] = int(X_test_trans.shape[1])
-    metrics["model_name"] = "LightGBM"
+    print("LightGBM Metrics (3-class, sklearn):")
+    print(
+        classification_report(
+            y_test,
+            y_pred,
+            target_names=["dropout", "enrolled", "graduate"],
+            digits=4,
+        )
+    )
 
-    best_iter = getattr(model, "best_iteration_", None)
+    cm = confusion_matrix(y_test, y_pred, labels=[0, 1, 2])
 
-    print("Metrics:")
-    print(f"F1: {metrics['f1']:.4f}")
-    print(f"Recall: {metrics['recall']:.4f}")
-    print(f"ROC-AUC: {metrics['roc_auc']:.4f}")
-    print(f"PR-AUC: {metrics['pr_auc']:.4f}")
-    print(f"Accuracy: {metrics['accuracy']:.4f}")
-    print(f"Best iteration: {best_iter}")
-    print("Confusion Matrix:")
-    print(metrics["confusion_matrix"])
-    print("Classification Report:")
-    print(metrics["classification_report"])
+    if SHOW_CM_PLOT:
+        import matplotlib.pyplot as plt
+        from sklearn.metrics import ConfusionMatrixDisplay
 
-    output_dir = Path(config.OUTPUT_DIR)
-    save_json(output_dir / "metrics.json", metrics)
-    plot_roc_curve(y_test, y_proba, output_dir / "roc_curve.png")
-    plot_pr_curve(y_test, y_proba, output_dir / "pr_curve.png")
+        disp = ConfusionMatrixDisplay(
+            confusion_matrix=cm,
+            display_labels=["dropout", "enrolled", "graduate"],
+        )
+
+        disp.plot(cmap="viridis", values_format="d")
+        plt.title("Confusion Matrix (3-class)")
+        plt.show()
+
+    metrics = {
+        "confusion_matrix": cm.tolist(),
+        "classification_report": classification_report(
+            y_test,
+            y_pred,
+            target_names=["dropout", "enrolled", "graduate"],
+            digits=4,
+        ),
+    }
+
+    trained_pipeline = Pipeline(
+        steps=[
+            ("preprocess", preprocessor),
+            ("model", model),
+        ]
+    )
+    model_path = OUTPUT_DIR / "lightgbm_model.pkl"
+    with model_path.open("wb") as handle:
+        pickle.dump(trained_pipeline, handle)
+    print(f"Saved model to: {model_path.resolve()}")
+
+    save_json(OUTPUT_DIR / "metrics.json", metrics)
 
 
 if __name__ == "__main__":

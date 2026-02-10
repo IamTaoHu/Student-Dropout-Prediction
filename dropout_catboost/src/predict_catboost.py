@@ -9,7 +9,7 @@ from catboost import CatBoostClassifier
 # Keep mapping consistent with training
 LABELS = ["dropout", "enrolled", "graduate"]
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = (PROJECT_ROOT / "data" / "data.csv").resolve()
 MODEL_PATH = (PROJECT_ROOT / "outputs" / "catboost_model.cbm").resolve()
 

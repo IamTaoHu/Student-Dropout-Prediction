@@ -7,7 +7,7 @@ import torch
 from pytorch_tabnet.tab_model import TabNetClassifier
 from sklearn.metrics import classification_report, confusion_matrix
 
-from .utils import (
+from utils import (
     ensure_dir,
     load_csv,
     infer_target_column,
@@ -18,6 +18,11 @@ from .utils import (
     save_json,
     ID2LABEL,
 )
+
+
+def resolve_path(base: Path, p: str) -> Path:
+    pp = Path(p)
+    return pp if pp.is_absolute() else (base / pp)
 
 
 def _resolve_data_path(path_str: str) -> Path:
@@ -134,13 +139,27 @@ def main() -> None:
     parser.add_argument("--model_zips", default="", help="Comma-separated model zip filenames in model_dir")
     parser.add_argument("--target_col", default="")
     parser.add_argument("--threshold", default="")
+    parser.add_argument(
+        "--output",
+        default="outputs/predictions/predictions.csv",
+        help="Output CSV path (default: outputs/predictions/predictions.csv)",
+    )
+    parser.add_argument(
+        "--head",
+        type=int,
+        default=10,
+        help="How many rows to print (default: 10)",
+    )
     args = parser.parse_args()
 
-    data_path = _resolve_data_path(args.data_path)
+    PROJECT_ROOT = Path(__file__).resolve().parents[1]
+    base_dir = PROJECT_ROOT
+    data_path = resolve_path(base_dir, args.data_path)
+    data_path = _resolve_data_path(str(data_path))
     if not data_path.exists():
         raise FileNotFoundError(f"Data file not found: {data_path}")
 
-    model_dir = Path(args.model_dir)
+    model_dir = resolve_path(base_dir, args.model_dir).resolve()
     if args.model_zips.strip():
         zip_names = [z.strip() for z in args.model_zips.split(",") if z.strip()]
         model_zip_paths = [model_dir / z for z in zip_names]
@@ -213,34 +232,37 @@ def main() -> None:
         y_pred = (y_proba[:, 1] >= threshold).astype(int)
     pred_labels = [ID2LABEL[int(i)] for i in y_pred]
 
-    base_dir = Path(".")
-    preds_dir = base_dir / "outputs" / "predictions"
     metrics_dir = base_dir / "outputs" / "metrics"
-    ensure_dir(str(preds_dir))
     ensure_dir(str(metrics_dir))
 
     if task == "multiclass":
-        preds_payload = {
-            "y_pred": y_pred,
-            "pred_label": pred_labels,
-            "prob_dropout": y_proba[:, 0],
-            "prob_enrolled": y_proba[:, 1],
-            "prob_graduate": y_proba[:, 2],
-        }
+        proba = y_proba
+        proba_df = pd.DataFrame(
+            proba,
+            columns=["proba_dropout", "proba_enrolled", "proba_graduate"],
+        )
+        out = proba_df.copy()
+        out["pred_class_id"] = y_pred.astype(int)
+        out["pred_label"] = out["pred_class_id"].map(
+            {0: "dropout", 1: "enrolled", 2: "graduate"}
+        )
     else:
-        preds_payload = {
-            "y_pred": y_pred,
-            "pred_label": pred_labels,
-            "prob_0": y_proba[:, 0],
-            "prob_1": y_proba[:, 1],
-        }
-    if y_true is not None:
-        preds_payload["y_true"] = y_true
-    preds_df = pd.DataFrame(preds_payload)
-    preds_path = preds_dir / "predictions.csv"
-    preds_df.to_csv(preds_path, index=False)
+        proba = y_proba
+        proba_df = pd.DataFrame(proba, columns=["proba_dropout", "proba_enrolled"])
+        out = proba_df.copy()
+        out["pred_class_id"] = y_pred.astype(int)
+        out["pred_label"] = out["pred_class_id"].map({0: "enrolled", 1: "dropout"})
 
-    print(f"Predicted rows: {len(preds_df)}")
+    print(out.head(args.head).to_string(index=False))
+
+    out_path = Path(args.output).expanduser()
+    if not out_path.is_absolute():
+        out_path = (base_dir / out_path)
+    out_path = out_path.resolve()
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out.to_csv(out_path, index=False)
+    print(f"Saved predictions to: {out_path}")
 
     if y_true is not None:
         if task == "multiclass":
@@ -257,49 +279,7 @@ def main() -> None:
         metrics_path = metrics_dir / "metrics_predict.json"
         save_json(str(metrics_path), metrics_payload)
 
-        if task == "multiclass":
-            print()
-            _print_multiclass_tables(y_true, y_pred, metrics)
-            print()
-        else:
-            tn = metrics.get("TN", None)
-            fp = metrics.get("FP", None)
-            fn = metrics.get("FN", None)
-            tp = metrics.get("TP", None)
-            def _fmt(v, width=10, prec=4):
-                if v is None:
-                    return f"{'NA':>{width}}"
-                if isinstance(v, float):
-                    return f"{v:>{width}.{prec}f}"
-                return f"{str(v):>{width}}"
-
-            print()
-            print(
-                f"{'Model':<10}"
-                f"{'accuracy':>10}"
-                f"{'f1':>10}"
-                f"{'recall':>10}"
-                f"{'roc_auc':>10}"
-                f"{'pr_auc':>10}"
-                f"{'TN':>6}"
-                f"{'FP':>6}"
-                f"{'FN':>6}"
-                f"{'TP':>6}"
-            )
-            print("-" * 84)
-            print(
-                f"{'TabNet':<10}"
-                f"{_fmt(metrics.get('accuracy'))}"
-                f"{_fmt(metrics.get('f1'))}"
-                f"{_fmt(metrics.get('recall'))}"
-                f"{_fmt(metrics.get('roc_auc'))}"
-                f"{_fmt(metrics.get('pr_auc'))}"
-                f"{_fmt(metrics.get('TN'), 6, 0)}"
-                f"{_fmt(metrics.get('FP'), 6, 0)}"
-                f"{_fmt(metrics.get('FN'), 6, 0)}"
-                f"{_fmt(metrics.get('TP'), 6, 0)}"
-            )
-            print()
+        # Metrics saved only; no console printing for predict.
 
 
 
