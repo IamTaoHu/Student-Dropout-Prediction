@@ -1,0 +1,25 @@
+{
+    "model_name": "FT-Transformer",
+    "num_features": 36,
+    "accuracy": 0.7469879518072289,
+    "f1_macro": 0.6968460567668155,
+    "recall_macro": 0.7001892775067504,
+    "confusion_matrix": [
+        [
+            169,
+            29,
+            16
+        ],
+        [
+            28,
+            60,
+            31
+        ],
+        [
+            31,
+            33,
+            267
+        ]
+    ],
+    "classification_report": "              precision    recall  f1-score   support\n\n     Dropout     0.7412    0.7897    0.7647       214\n    Enrolled     0.4918    0.5042    0.4979       119\n    Graduate     0.8503    0.8066    0.8279       331\n\n    accuracy                         0.7470       664\n   macro avg     0.6944    0.7002    0.6968       664\nweighted avg     0.7509    0.7470    0.7484       664\n"
+}
