@@ -7,18 +7,11 @@ import numpy as np
 import pandas as pd
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from transformers.utils import logging as hf_logging
+import os
 
-from .metrics import (
-    ID2LABEL,
-    compute_metrics,
-    compute_metrics_multiclass,
-    map_labels,
-    print_confusion_matrix,
-    print_per_class_table,
-    print_summary_table,
-)
-from .utils_textify import detect_target_column, df_to_texts
-
+from metrics import ID2LABEL, map_labels, compute_metrics_multiclass
+from utils_textify import detect_target_column, df_to_texts
 
 class TextDataset(torch.utils.data.Dataset):
     def __init__(self, texts, tokenizer, max_length: int = 128):
@@ -33,7 +26,7 @@ class TextDataset(torch.utils.data.Dataset):
         return len(next(iter(self.encodings.values())))
 
     def __getitem__(self, idx: int):
-        return {key: torch.tensor(val[idx]) for key, val in self.encodings.items()}
+        return {k: torch.tensor(v[idx]) for k, v in self.encodings.items()}
 
 
 def resolve_column_name(df: pd.DataFrame, name: str):
@@ -43,8 +36,18 @@ def resolve_column_name(df: pd.DataFrame, name: str):
     if name in df.columns:
         return name
 
-    mapping = {_norm(col): col for col in df.columns}
+    mapping = {_norm(c): c for c in df.columns}
     return mapping.get(_norm(name))
+
+
+def _read_csv_auto(path: Path) -> pd.DataFrame:
+    try:
+        df = pd.read_csv(path, sep=";")
+        if len(df.columns) >= 10:
+            return df
+    except Exception:
+        pass
+    return pd.read_csv(path, sep=None, engine="python")
 
 
 def main() -> None:
@@ -53,37 +56,54 @@ def main() -> None:
     default_output = base_dir / "outputs" / "predictions.csv"
     model_dir = base_dir / "outputs" / "model"
 
-    parser = argparse.ArgumentParser(description="Predict dropout using encoder model.")
+    parser = argparse.ArgumentParser(description="Predict dropout using PLM encoder (3-class).")
     parser.add_argument("--input_csv", type=str, default=str(default_input))
     parser.add_argument("--output_csv", type=str, default=str(default_output))
-    parser.add_argument(
-        "--task",
-        type=str,
-        choices=["multiclass", "binary"],
-        default="multiclass",
-    )
-    parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--max-length", type=int, default=128)
-    parser.add_argument("--target-col", type=str, default=None)
+    parser.add_argument("--target-col", type=str, default=None, help="Optional: column name for y_true metrics")
+    parser.add_argument("--quiet", action="store_true", help="Suppress all console output")
     args = parser.parse_args()
 
-    df = pd.read_csv(args.input_csv)
-    if len(df.columns) == 1 and ";" in str(df.columns[0]):
-        df = pd.read_csv(args.input_csv, sep=";")
+    def log(msg: str) -> None:
+        if not args.quiet:
+            print(msg)
+
+    os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    if args.quiet:
+        hf_logging.set_verbosity_error()
+    else:
+        hf_logging.set_verbosity_info()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    log(f"[INFO] Using device: {device}")
+
+    df = _read_csv_auto(Path(args.input_csv))
+
     if args.target_col is not None:
         target_col = resolve_column_name(df, args.target_col)
     else:
         target_col = detect_target_column(df)
+
     if target_col is None:
-        raise ValueError(
-            f"Target column not found. Available columns: {list(df.columns)}"
-        )
-    texts = df_to_texts(df, target_col)
+        log("[WARN] Target column not found. Will run prediction only (no metrics).")
+    spec_path = model_dir / "textify_spec.json"
+    textify_spec = None
+    if spec_path.exists():
+        try:
+            import json
+            with spec_path.open("r", encoding="utf-8") as f:
+                textify_spec = json.load(f)
+            log(f"[INFO] Loaded textify spec from: {spec_path}")
+        except Exception as exc:
+            log(f"[WARN] Could not load textify spec: {exc}. Falling back to on-the-fly spec.")
+    texts = df_to_texts(df, target_col, spec=textify_spec)
 
     tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
     model = AutoModelForSequenceClassification.from_pretrained(str(model_dir))
-    print("[INFO] Loaded model from outputs/model")
+    model.to(device)
     model.eval()
+    log("[INFO] Loaded model from outputs/model")
 
     dataset = TextDataset(texts, tokenizer, max_length=args.max_length)
     loader = torch.utils.data.DataLoader(dataset, batch_size=8)
@@ -91,102 +111,43 @@ def main() -> None:
     all_probs = []
     with torch.no_grad():
         for batch in loader:
+            batch = {k: v.to(device) for k, v in batch.items()}
             outputs = model(**batch)
-            probs = torch.softmax(outputs.logits, dim=1).cpu().numpy()
+            probs = torch.softmax(outputs.logits, dim=1).detach().cpu().numpy()
             all_probs.append(probs)
 
     probs = np.vstack(all_probs)
-    if args.task == "multiclass":
-        y_pred_class = probs.argmax(axis=1)
-        pred_label = [ID2LABEL[int(c)] for c in y_pred_class]
-    else:
-        y_proba = probs[:, 1]
-        y_pred_class = (y_proba >= args.threshold).astype(int)
-        pred_label = [str(int(c)) for c in y_pred_class]
+    y_pred_class = probs.argmax(axis=1)
+    pred_label = [ID2LABEL[int(c)] for c in y_pred_class]
 
     y_true = None
-    def _print_binary_table(metrics: dict) -> None:
-        headers = [
-            ("Model", 18),
-            ("accuracy", 10),
-            ("f1", 10),
-            ("recall", 10),
-            ("roc_auc", 10),
-            ("pr_auc", 10),
-            ("TN", 6),
-            ("FP", 6),
-            ("FN", 6),
-            ("TP", 6),
-        ]
-        row = [
-            "PLM-Encoder",
-            metrics.get("accuracy"),
-            metrics.get("f1"),
-            metrics.get("recall"),
-            metrics.get("roc_auc"),
-            metrics.get("pr_auc"),
-            metrics.get("TN"),
-            metrics.get("FP"),
-            metrics.get("FN"),
-            metrics.get("TP"),
-        ]
-
-        def _fmt_local(v):
-            if v is None:
-                return "NA"
-            if isinstance(v, (float, np.floating)):
-                return f"{v:.4f}"
-            return str(v)
-
-        header_line = " | ".join(h.ljust(w) for h, w in headers)
-        sep_line = "-+-".join("-" * w for _, w in headers)
-        row_line = " | ".join(
-            _fmt_local(val).ljust(w) for (val, (_, w)) in zip(row, headers)
-        )
-        print(header_line)
-        print(sep_line)
-        print(row_line)
-
     if target_col is not None:
         try:
-            if args.task == "multiclass":
-                y_true = map_labels(df[target_col])
-                metrics = compute_metrics_multiclass(y_true, y_pred_class, probs)
-                print_summary_table(model_name="PLM-Encoder", metrics=metrics)
-                print_per_class_table(metrics, ID2LABEL)
-                print_confusion_matrix(metrics, ID2LABEL)
-            else:
-                y_true = df[target_col].astype(int)
-                metrics = compute_metrics(y_true, y_pred_class, probs[:, 1], num_classes=2)
-                _print_binary_table(metrics)
+            y_true = map_labels(df[target_col])
+            _ = compute_metrics_multiclass(y_true, y_pred_class, probs)
         except Exception as exc:
             print(f"[WARN] Could not compute metrics: {exc}")
 
-    if args.task == "multiclass":
-        out_df = pd.DataFrame(
-            {
-                "pred_class": y_pred_class,
-                "pred_label": pred_label,
-                "prob_dropout": probs[:, 0],
-                "prob_enrolled": probs[:, 1],
-                "prob_graduate": probs[:, 2],
-            }
-        )
-        if y_true is not None:
-            out_df.insert(0, "y_true", y_true)
-    else:
-        out_df = pd.DataFrame(
-            {
-                "pred_class": y_pred_class,
-                "pred_label": pred_label,
-                "prob_1": probs[:, 1],
-                "pred_proba_dropout": probs[:, 1],
-            }
-        )
-        if y_true is not None:
-            out_df.insert(0, "y_true", y_true)
+    out_df = pd.DataFrame(
+        {
+            "proba_dropout": probs[:, 0],
+            "proba_enrolled": probs[:, 1],
+            "proba_graduate": probs[:, 2],
+            "pred_class_id": y_pred_class,
+            "pred_label": pred_label,
+        }
+    )
+    if y_true is not None:
+        out_df.insert(0, "y_true", y_true)
+
+    # Print preview table like XGBoost (top 10)
+    preview_cols = ["proba_dropout", "proba_enrolled", "proba_graduate", "pred_class_id", "pred_label"]
+    log(out_df[preview_cols].head(10).to_string(index=False))
+    log("")
+
     Path(args.output_csv).parent.mkdir(parents=True, exist_ok=True)
     out_df.to_csv(args.output_csv, index=False)
+    log(f"Saved predictions to: {args.output_csv}")
 
 
 if __name__ == "__main__":

@@ -1,31 +1,44 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
+import json
 
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 import xgboost as xgb
 
-from src import config
-from src.evaluate import compute_metrics
-from src.utils import load_csv, save_json
+
+# -----------------------
+# Minimal local config
+# -----------------------
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = (PROJECT_ROOT / "data" / "data.csv").resolve()
+OUTPUT_DIR = (PROJECT_ROOT / "outputs").resolve()
+RANDOM_STATE = 42
+TEST_SIZE = 0.2
+
+
+def save_json(obj: object, path: str | Path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2, ensure_ascii=False)
+    return path
+
 
 TARGET_CANDIDATES = [
-    "Target",
-    "target",
-    "STATUS",
-    "Status",
-    "status",
-    "Outcome",
-    "outcome",
-    "Class",
-    "class",
+    "Target", "target",
+    "STATUS", "Status", "status",
+    "Outcome", "outcome",
+    "Class", "class",
 ]
-TARGET_MAPPING = {"dropout": 1, "enrolled": 0, "graduate": 0}
+TARGET_MAPPING = {"dropout": 0, "enrolled": 1, "graduate": 2}
 
 GROUP_PATTERNS = {
     "G1_demographic": [
@@ -70,206 +83,205 @@ EXPERIMENTS = [
 
 
 def _detect_target_column(columns: pd.Index) -> str:
-    for candidate in TARGET_CANDIDATES:
-        if candidate in columns:
-            return candidate
+    for c in TARGET_CANDIDATES:
+        if c in columns:
+            return c
     raise ValueError(f"Missing target column. Available columns: {columns.tolist()}")
 
 
-def _normalize_target(series: pd.Series) -> pd.Series:
-    return series.astype(str).str.strip().str.lower()
+def _map_target(series: pd.Series, column_name: str) -> pd.Series:
+    normalized = series.astype(str).str.strip().str.lower()
+    unexpected = sorted(set(normalized.dropna().unique()) - set(TARGET_MAPPING))
+    if unexpected:
+        raise ValueError(f"Unexpected target labels in {column_name}: {unexpected}")
+    return normalized.map(TARGET_MAPPING)
 
 
 def _build_group_columns(columns: pd.Index) -> dict[str, list[str]]:
     group_columns: dict[str, list[str]] = {}
     lowered = [col.lower() for col in columns]
     for group_name, patterns in GROUP_PATTERNS.items():
-        group_patterns = [pattern.lower() for pattern in patterns]
+        patt = [p.lower() for p in patterns]
         matches = [
-            columns[idx]
-            for idx, column_name in enumerate(lowered)
-            if any(pattern in column_name for pattern in group_patterns)
+            columns[i]
+            for i, col_lower in enumerate(lowered)
+            if any(p in col_lower for p in patt)
         ]
         group_columns[group_name] = matches
     return group_columns
 
 
-def _select_features(
-    group_columns: dict[str, list[str]],
-    groups: list[str],
-    experiment_name: str,
-) -> list[str]:
+def _select_features(group_columns: dict[str, list[str]], groups: list[str], exp: str) -> list[str]:
     selected: list[str] = []
-    for group in groups:
-        columns = group_columns.get(group, [])
-        if not columns:
-            print(f"Warning: {group} has 0 columns; skipping.")
+    for g in groups:
+        cols = group_columns.get(g, [])
+        if not cols:
+            print(f"Warning: {g} has 0 columns; skipping.")
             continue
-        for column in columns:
-            if column not in selected:
-                selected.append(column)
+        for c in cols:
+            if c not in selected:
+                selected.append(c)
+
     if not selected:
         raise ValueError(
-            f"Feature set is empty for experiment '{experiment_name}'. "
-            "Check group definitions and input data."
+            f"Feature set is empty for experiment '{exp}'. "
+            "Check GROUP_PATTERNS vs your column names."
         )
     return selected
 
 
-def _run_experiment(
-    X: pd.DataFrame,
-    y: pd.Series,
-    train_idx: pd.Index,
-    test_idx: pd.Index,
-    feature_columns: list[str],
-) -> dict:
-    X_selected = X[feature_columns]
-    numeric_features = X_selected.select_dtypes(include=["number"]).columns.tolist()
-    categorical_features = X_selected.select_dtypes(exclude=["number"]).columns.tolist()
+def _make_preprocessor(X: pd.DataFrame) -> ColumnTransformer:
+    num_cols = X.select_dtypes(include=["number"]).columns.tolist()
+    cat_cols = X.select_dtypes(exclude=["number"]).columns.tolist()
 
-    preprocessor = ColumnTransformer(
+    return ColumnTransformer(
         transformers=[
-            ("num", SimpleImputer(strategy="median"), numeric_features),
+            ("num", SimpleImputer(strategy="median"), num_cols),
             (
                 "cat",
                 Pipeline(
                     steps=[
                         ("imputer", SimpleImputer(strategy="most_frequent")),
-                        ("encoder", OneHotEncoder(handle_unknown="ignore")),
+                        ("ohe", OneHotEncoder(handle_unknown="ignore")),
                     ]
                 ),
-                categorical_features,
+                cat_cols,
             ),
-        ]
+        ],
+        remainder="drop",
     )
 
-    X_train = X_selected.loc[train_idx]
-    X_test = X_selected.loc[test_idx]
+
+def _run_experiment(X: pd.DataFrame, y: pd.Series, train_idx: pd.Index, test_idx: pd.Index, feat_cols: list[str]) -> dict:
+    X_sel = X[feat_cols].copy()
+
+    X_train = X_sel.loc[train_idx]
+    X_test = X_sel.loc[test_idx]
     y_train = y.loc[train_idx]
     y_test = y.loc[test_idx]
 
-    X_train_sub, X_val, y_train_sub, y_val = train_test_split(
+    # internal val split for early stopping
+    X_tr, X_val, y_tr, y_val = train_test_split(
         X_train,
         y_train,
         test_size=0.2,
-        random_state=config.RANDOM_STATE,
+        random_state=RANDOM_STATE,
         stratify=y_train,
     )
 
-    X_train_trans = preprocessor.fit_transform(X_train_sub)
-    X_val_trans = preprocessor.transform(X_val)
-    X_test_trans = preprocessor.transform(X_test)
+    pre = _make_preprocessor(X_tr)
+    X_tr_t = pre.fit_transform(X_tr)
+    X_val_t = pre.transform(X_val)
+    X_test_t = pre.transform(X_test)
 
-    dtrain = xgb.DMatrix(X_train_trans, label=y_train_sub)
-    dval = xgb.DMatrix(X_val_trans, label=y_val)
-    dtest = xgb.DMatrix(X_test_trans, label=y_test)
+    num_features_after = int(X_tr_t.shape[1])
 
-    params = {
-        "objective": "binary:logistic",
-        "eval_metric": "auc",
-        "eta": 0.05,
-        "max_depth": 6,
-        "subsample": 0.9,
-        "colsample_bytree": 0.9,
-        "lambda": 1.0,
-        "seed": 42,
-        "tree_method": "hist",
-    }
-
-    booster = xgb.train(
-        params=params,
-        dtrain=dtrain,
-        num_boost_round=1000,
-        evals=[(dval, "val")],
-        early_stopping_rounds=50,
-        verbose_eval=False,
+    # NOTE:
+    # Newer XGBoost sklearn interface removed early_stopping_rounds from .fit().
+    # Use the same-name parameter in the constructor instead. :contentReference[oaicite:1]{index=1}
+    clf = xgb.XGBClassifier(
+        objective="multi:softprob",
+        num_class=3,
+        n_estimators=2000,
+        learning_rate=0.05,
+        max_depth=6,
+        subsample=0.9,
+        colsample_bytree=0.9,
+        reg_lambda=1.0,
+        random_state=RANDOM_STATE,
+        tree_method="hist",
+        eval_metric="mlogloss",
+        early_stopping_rounds=200,
     )
 
-    y_proba = booster.predict(dtest)
-    y_pred = (y_proba >= 0.5).astype(int)
+    clf.fit(
+        X_tr_t,
+        y_tr,
+        eval_set=[(X_val_t, y_val)],
+        verbose=False,
+    )
 
-    metrics = compute_metrics(y_test, y_pred, y_proba)
-    metrics["num_features"] = int(X_test_trans.shape[1])
-    return metrics
+    proba = clf.predict_proba(X_test_t)
+    pred = proba.argmax(axis=1)
+
+    acc = accuracy_score(y_test, pred)
+    cm = confusion_matrix(y_test, pred).tolist()
+    report = classification_report(
+        y_test,
+        pred,
+        target_names=["dropout", "enrolled", "graduate"],
+        digits=4,
+        output_dict=True,
+    )
+
+    return {
+        "accuracy": float(acc),
+        "macro_f1": float(report["macro avg"]["f1-score"]),
+        "weighted_f1": float(report["weighted avg"]["f1-score"]),
+        "num_features": num_features_after,
+        "confusion_matrix": cm,
+        "classification_report": report,
+    }
 
 
 def main() -> None:
-    df = load_csv(Path(config.DATA_PATH))
-    target_column = _detect_target_column(df.columns)
+    df = pd.read_csv(DATA_PATH, sep=None, engine="python")
+    df.columns = df.columns.str.replace("\ufeff", "", regex=False).str.strip()
 
-    normalized = _normalize_target(df[target_column])
-    y = normalized.map(TARGET_MAPPING)
-    X = df.drop(columns=[target_column])
-    valid_mask = y.notna()
-    y = y[valid_mask]
-    X = X.loc[valid_mask]
+    target_col = _detect_target_column(df.columns)
+    y = _map_target(df[target_col], target_col)
+    X = df.drop(columns=[target_col])
 
-    group_columns = _build_group_columns(X.columns)
+    valid = y.notna()
+    y = y[valid]
+    X = X.loc[valid]
+
+    group_cols = _build_group_columns(X.columns)
 
     train_idx, test_idx = train_test_split(
         X.index,
-        test_size=config.TEST_SIZE,
-        random_state=config.RANDOM_STATE,
+        test_size=TEST_SIZE,
+        random_state=RANDOM_STATE,
         stratify=y,
     )
 
     results: list[dict] = []
-    for experiment_name, groups in EXPERIMENTS:
-        feature_columns = _select_features(group_columns, groups, experiment_name)
-        metrics = _run_experiment(X, y, train_idx, test_idx, feature_columns)
+    for exp, groups in EXPERIMENTS:
+        feat_cols = _select_features(group_cols, groups, exp)
+        metrics = _run_experiment(X, y, train_idx, test_idx, feat_cols)
         results.append(
             {
-                "experiment": experiment_name,
-                "groups": groups,
+                "experiment": exp,
                 "num_features": metrics["num_features"],
-                "features": feature_columns,
-                "f1": metrics["f1"],
-                "recall": metrics["recall"],
-                "roc_auc": metrics["roc_auc"],
-                "pr_auc": metrics["pr_auc"],
                 "accuracy": metrics["accuracy"],
-                "model_name": "XGBoost",
+                "macro_f1": metrics["macro_f1"],
+                "weighted_f1": metrics["weighted_f1"],
+                "groups": groups,
+                "features": feat_cols,
                 "confusion_matrix": metrics["confusion_matrix"],
                 "classification_report": metrics["classification_report"],
             }
         )
 
     results_df = pd.DataFrame(results)
-    summary_columns = [
-        "experiment",
-        "num_features",
-        "f1",
-        "recall",
-        "roc_auc",
-        "pr_auc",
-        "accuracy",
-    ]
-    existing_cols = [c for c in summary_columns if c in results_df.columns]
-    summary_df = results_df[existing_cols].copy()
-
-    metric_cols = ["f1", "recall", "roc_auc", "pr_auc", "accuracy"]
-    metric_cols = [c for c in metric_cols if c in summary_df.columns]
-    summary_df[metric_cols] = summary_df[metric_cols].astype(float).round(4)
+    summary_df = results_df[["experiment", "num_features", "accuracy", "macro_f1", "weighted_f1"]].copy()
+    summary_df[["accuracy", "macro_f1", "weighted_f1"]] = summary_df[["accuracy", "macro_f1", "weighted_f1"]].astype(float).round(4)
 
     print("\nXGBoost Feature Group Performance Summary")
     print(summary_df.to_string(index=False))
     print("\nMarkdown table:\n")
     try:
         print(summary_df.to_markdown(index=False))
-    except ImportError:
-        print("[WARN] 'tabulate' not installed. Falling back to plain text table.")
+    except Exception:
         print(summary_df.to_string(index=False))
 
-    output_dir = Path(config.OUTPUT_DIR)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    summary_df.to_csv(output_dir / "xgboost_feature_group_summary.csv", index=False)
-    summary_df.to_json(
-        output_dir / "xgboost_feature_group_summary.json",
-        orient="records",
-        indent=2,
-    )
-    save_json(output_dir / "feature_group_results.json", results)
-    results_df.to_csv(output_dir / "feature_group_results.csv", index=False)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    outdir = OUTPUT_DIR / "feature_groups" / f"run_{timestamp}"
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    summary_df.to_csv(outdir / "summary.csv", index=False)
+    save_json(summary_df.to_dict(orient="records"), outdir / "summary.json")
+    save_json(results, outdir / "details.json")
 
 
 if __name__ == "__main__":

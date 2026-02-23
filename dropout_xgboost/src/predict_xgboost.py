@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import joblib
 import pandas as pd
+import xgboost as xgb
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +23,11 @@ TARGET_CANDIDATES = [
     "outcome",
     "Class",
     "class",
+    "final_result",
+    "FinalResult",
+    "label",
+    "Label",
+    "y",
 ]
 LABELS = ["dropout", "enrolled", "graduate"]
 
@@ -46,6 +53,12 @@ def parse_args() -> argparse.Namespace:
         help="Output CSV path (default: outputs/predictions/predictions.csv)",
     )
     p.add_argument(
+        "--metrics",
+        type=str,
+        default=str((OUTPUT_DIR / "metrics" / "metrics.json").resolve()),
+        help="Metrics JSON path that contains labels (default: outputs/metrics/metrics.json)",
+    )
+    p.add_argument(
         "--head",
         type=int,
         default=10,
@@ -61,6 +74,24 @@ def _detect_target_column(columns: pd.Index) -> str | None:
     return None
 
 
+def _load_labels_from_metrics(metrics_path: Path) -> list[str] | None:
+    if not metrics_path.exists():
+        return None
+    try:
+        with metrics_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    labels = data.get("labels")
+    if (
+        isinstance(labels, list)
+        and len(labels) >= 2
+        and all(isinstance(x, str) for x in labels)
+    ):
+        return labels
+    return None
+
+
 def main() -> None:
     args = parse_args()
 
@@ -70,18 +101,41 @@ def main() -> None:
 
     target_col = _detect_target_column(df.columns)
     X = df.drop(columns=[target_col]) if target_col else df.copy()
+    non_numeric = X.select_dtypes(exclude=["number"]).columns.tolist()
+    if non_numeric:
+        print("Dropping non-numeric columns:", non_numeric)
+        X = X.drop(columns=non_numeric)
+    X = X.astype("float32")
 
     model_path = Path(args.model).expanduser().resolve()
-    clf = joblib.load(model_path)
+    model = joblib.load(model_path)
 
-    proba = clf.predict_proba(X)
-    out = pd.DataFrame(
-        proba, columns=["proba_dropout", "proba_enrolled", "proba_graduate"]
-    )
-    out["pred_class_id"] = out[
-        ["proba_dropout", "proba_enrolled", "proba_graduate"]
-    ].values.argmax(axis=1)
-    out["pred_label"] = out["pred_class_id"].map(lambda i: LABELS[int(i)])
+    print("X shape:", X.shape)
+    print("X dtypes summary:", X.dtypes.value_counts().to_dict())
+
+    if isinstance(model, xgb.Booster):
+        dmat = xgb.DMatrix(X)
+        proba = model.predict(dmat)
+    else:
+        proba = model.predict_proba(X)
+
+    if getattr(proba, "ndim", None) != 2:
+        raise ValueError(
+            f"Expected 2D probability array (n_samples, n_classes), got shape={getattr(proba, 'shape', None)}"
+        )
+    num_class = proba.shape[1]
+    labels_from_metrics = _load_labels_from_metrics(Path(args.metrics).expanduser().resolve())
+    if labels_from_metrics is not None and len(labels_from_metrics) == num_class:
+        labels = labels_from_metrics
+        print(f"Loaded labels from metrics.json: {labels}")
+    else:
+        labels = [f"class_{i}" for i in range(num_class)]
+        print("metrics.json labels not found/mismatched; using fallback labels:", labels)
+
+    proba_cols = [f"proba_{lab}" for lab in labels]
+    out = pd.DataFrame(proba, columns=proba_cols)
+    out["pred_class_id"] = out[proba_cols].values.argmax(axis=1)
+    out["pred_label"] = out["pred_class_id"].map(lambda i: labels[int(i)])
 
     print(out.head(args.head).to_string(index=False))
 

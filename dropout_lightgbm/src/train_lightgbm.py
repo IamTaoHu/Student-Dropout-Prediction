@@ -6,7 +6,7 @@ import pandas as pd
 from lightgbm import LGBMClassifier, early_stopping, log_evaluation
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, f1_score, recall_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
@@ -143,14 +143,27 @@ def main() -> None:
         plt.title("Confusion Matrix (3-class)")
         plt.show()
 
+    report_str = classification_report(
+        y_test,
+        y_pred,
+        target_names=["dropout", "enrolled", "graduate"],
+        digits=4,
+    )
+    report_dict = classification_report(
+        y_test,
+        y_pred,
+        target_names=["dropout", "enrolled", "graduate"],
+        output_dict=True,
+    )
+
     metrics = {
+        "model_name": "LightGBM",
+        "accuracy": float(accuracy_score(y_test, y_pred)),
+        "f1_macro": float(f1_score(y_test, y_pred, average="macro")),
+        "recall_macro": float(recall_score(y_test, y_pred, average="macro")),
         "confusion_matrix": cm.tolist(),
-        "classification_report": classification_report(
-            y_test,
-            y_pred,
-            target_names=["dropout", "enrolled", "graduate"],
-            digits=4,
-        ),
+        "classification_report": report_str,
+        "classification_report_dict": report_dict,
     }
 
     trained_pipeline = Pipeline(
