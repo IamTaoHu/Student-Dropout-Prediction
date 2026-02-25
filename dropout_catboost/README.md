@@ -1,30 +1,4 @@
-# CatBoost Student Dropout Prediction (Minimal)
-
-This folder contains a **minimal, self-contained CatBoost pipeline** for **3-class student status prediction**:
-
-- `dropout` → 0  
-- `enrolled` → 1  
-- `graduate` → 2  
-
-The goal is to keep the code **simple, readable, and runnable from a single folder** without package-style imports.
-
----
-
-## Folder Structure
-dropout_catboost/
-├── train_catboost.py # Train CatBoost (3-class) + sklearn metrics
-├── predict_catboost.py # Predict with trained model (CLI supported)
-├── data/
-│ └── data.csv # Input dataset
-├── outputs/
-│ ├── catboost_model.cbm # Trained model
-│ ├── metrics.json # Saved evaluation metrics
-│ └── predictions.csv # Prediction results
-├── _optional/ # Advanced / non-minimal scripts (SHAP, explainability)
-├── requirements.txt
-└── README.md
-
----
+# CatBoost Student Dropout Prediction
 
 ## Environment Setup (Windows PowerShell)
 
@@ -34,18 +8,58 @@ dropout_catboost/
 Install dependencies if needed:
 pip install -r requirements.txt
 
-Run training from this folder:
-py src\train_catboost.py
+Run training stage 1:
+py .\src\train_stage1.py ^
+  --input .\data\kuzilek_student_features_clean.csv ^
+  --target final_result ^
+  --stage1_mode ova4 ^
+  --route_policy margin_gate ^
+  --optimize_joint 1 ^
+  --grid_t_pass "0.50,0.55,0.60" ^
+  --grid_t_notpass "0.30,0.35,0.40" ^
+  --grid_t_margin "0.03,0.05,0.08" ^
+  --pass_recall_min 0.83
+Output:
+outputs/hierarchical/stage1_model.cbm
+outputs/hierarchical/stage1_threshold.json
+outputs/hierarchical/stage1_joint_sweep_results.json
+
+Run training stage 2:
+py .\src\train_stage2.py ^
+  --input .\data\kuzilek_student_features_clean.csv ^
+  --target final_result ^
+  --mode ova_sweep ^
+  --loss_mode ova ^
+  --base_weight_mode balanced ^
+  --sweep_depth "9,10" ^
+  --sweep_lr "0.03" ^
+  --sweep_l2 "9,12" ^
+  --sweep_bag_temp "0.6" ^
+  --sweep_rstrength "2" ^
+  --sweep_iters "5000"
+
+Output:
+outputs/hierarchical/stage2_model.cbm
+outputs/hierarchical/stage2_metrics.json
+outputs/hierarchical/stage2_labels.json
+
 
 Run Prediction (Default)
-Use the trained model to predict on the default dataset:
-py src\predict_catboost.py
+py .\src\predict_hierarchical.py `
+  --input .\data\kuzilek_student_features_clean.csv `
+  --target final_result
+Output:
+outputs/hierarchical/predictions_4class.csv
+outputs/hierarchical/hierarchical_metrics_4class.json
 
 Run Prediction (Custom Input via CLI)
 You can override the input file using --input:
 py src\predict_catboost.py --input data/data.csv
 
-Optional arguments:
-py src\predict_catboost.py --input data/data.csv --output outputs/preds.csv
-py src\predict_catboost.py --model outputs/catboost_model.cbm
+------------------------------------------------------------
+EXPECTED FINAL PERFORMANCE
+------------------------------------------------------------
+Macro F1 ≈ 0.70–0.72
+Accuracy ≈ 0.74
+Balanced Accuracy ≈ 0.74
 ```
