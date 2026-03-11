@@ -3,9 +3,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from config.paths import PROJECT_ROOT as DEFAULT_PROJECT_ROOT
+
+
+PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT", str(DEFAULT_PROJECT_ROOT))).resolve()
+
 
 def _load_dotenv() -> None:
-    env_path = Path(__file__).resolve().parents[1] / ".env"
+    env_path = PROJECT_ROOT / ".env"
     if not env_path.exists():
         return
     for line in env_path.read_text(encoding="utf-8").splitlines():
@@ -17,9 +22,7 @@ def _load_dotenv() -> None:
 
 
 _load_dotenv()
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT", str(PROJECT_ROOT))).resolve()
+PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT", str(DEFAULT_PROJECT_ROOT))).resolve()
 
 DATA_PATH = (PROJECT_ROOT / os.getenv("DATA_PATH", "./data/data.csv")).resolve()
 OUTPUT_DIR = (PROJECT_ROOT / os.getenv("OUTPUT_DIR", "./outputs")).resolve()
